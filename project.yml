@@ -22,6 +22,8 @@ targets:
       properties:
         CFBundleDisplayName: Smooth Frames
         UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSPhotoLibraryAddUsageDescription: Приложение сохраняет обработанное видео в Фото.

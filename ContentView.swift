@@ -10,6 +10,7 @@ struct ContentView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    crashSection
                     pickerSection
                     if vm.info != nil {
                         settingsSection
@@ -24,6 +25,26 @@ struct ContentView: View {
         }
         .onChange(of: pickerItem) { _, item in
             Task { await vm.load(item) }
+        }
+    }
+
+    // MARK: Прошлый вылет
+
+    @ViewBuilder
+    private var crashSection: some View {
+        if let crash = vm.previousCrash {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Прошлый рендер оборвался вылетом", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Последний этап: \(crash)")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button("Скрыть") { vm.dismissCrashNote() }
+                    .font(.footnote)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
         }
     }
 
@@ -138,14 +159,14 @@ struct ContentView: View {
         case .rendering(let value):
             VStack(spacing: 8) {
                 ProgressView(value: value)
-                Text("Обработка \(Int(value * 100))% — не блокируй экран и не сворачивай приложение")
+                Text("\(vm.stageText) · \(Int(value * 100))% — не блокируй экран и не сворачивай приложение")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-        case .done(let url):
+        case .done(let url, let message):
             VStack(spacing: 10) {
-                Label("Готово! Видео сохранено в «Фото»", systemImage: "checkmark.circle.fill")
+                Label(message, systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 ShareLink(item: url) {
                     Label("Поделиться файлом", systemImage: "square.and.arrow.up")

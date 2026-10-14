@@ -1,6 +1,10 @@
 import AVFoundation
 import VideoToolbox
 import CoreVideo
+import Accelerate
+import os
+
+typealias ProgressHandler = @Sendable (Double, String) -> Void
 
 struct RenderSettings {
     /// Битрейт результата в Мбит/с
@@ -25,7 +29,7 @@ enum RenderError: LocalizedError {
         case .noVideoTrack:
             return "В файле не найдена видеодорожка."
         case .unsupportedSize(let w, let h):
-            return "Разрешение \(w)×\(h) слишком большое. Максимум для iPhone — 4096×2160."
+            return "Разрешение \(w)×\(h) не поддерживается. Максимум 4096×2160 (для вертикальных видео 2160×4096)."
         case .configurationFailed:
             return "Не удалось настроить обработчик кадров."
         case .frameCreationFailed:
@@ -38,18 +42,25 @@ enum RenderError: LocalizedError {
     }
 }
 
+/// Запоминает последний этап рендера. Если приложение вылетит,
+/// при следующем запуске мы увидим, на чём это случилось.
+enum Breadcrumb {
+    private static let key = "lastRenderStage"
+    static func set(_ text: String) { UserDefaults.standard.set(text, forKey: key) }
+    static func clear() { UserDefaults.standard.removeObject(forKey: key) }
+    static var last: String? { UserDefaults.standard.string(forKey: key) }
+    static func freeMemoryMB() -> Int { Int(os_proc_available_memory()) / 1_048_576 }
+}
+
 enum FrameInterpolator {
 
     private static let pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
 
-    /// Читает видео, достраивает по одному промежуточному кадру между каждой парой
-    /// соседних кадров (60 → 120 к/с), кодирует в HEVC с заданным битрейтом.
-    /// Звук копируется без перекодирования.
     static func render(
         source: URL,
         output: URL,
         settings: RenderSettings,
-        progress: @escaping @Sendable (Double) -> Void
+        progress: @escaping ProgressHandler
     ) async throws {
 
         guard VTFrameRateConversionConfiguration.isSupported else {
@@ -57,6 +68,7 @@ enum FrameInterpolator {
         }
 
         // MARK: Исходник
+        Breadcrumb.set("чтение параметров видео")
         let asset = AVURLAsset(url: source)
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
             throw RenderError.noVideoTrack
@@ -67,10 +79,25 @@ enum FrameInterpolator {
         let duration = try await asset.load(.duration)
         let videoFormats = try await videoTrack.load(.formatDescriptions)
 
-        let width = Int(naturalSize.width.rounded())
-        let height = Int(naturalSize.height.rounded())
-        guard width <= 4096, height <= 2160 else {
-            throw RenderError.unsupportedSize(width, height)
+        let naturalW = Int(naturalSize.width.rounded())
+        let naturalH = Int(naturalSize.height.rounded())
+
+        // Интерполятор принимает кадры не больше 4096×2160.
+        // Вертикальные кадры на время обработки поворачиваем на 90°,
+        // а в итоговом файле возвращаем нужную ориентацию через метаданные.
+        let fitsDirect = naturalW <= 4096 && naturalH <= 2160
+        let fitsRotated = naturalH <= 4096 && naturalW <= 2160
+        guard fitsDirect || fitsRotated else {
+            throw RenderError.unsupportedSize(naturalW, naturalH)
+        }
+        let rotate = !fitsDirect
+        let width = rotate ? naturalH : naturalW
+        let height = rotate ? naturalW : naturalH
+
+        var writerTransform = transform
+        if rotate {
+            let undo = CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: CGFloat(width))
+            writerTransform = undo.concatenating(transform)
         }
 
         let audioTrack = try await asset.loadTracks(withMediaType: .audio).first
@@ -87,7 +114,6 @@ enum FrameInterpolator {
             kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
             kCVPixelBufferMetalCompatibilityKey as String: true
         ])
-        videoOut.alwaysCopiesSampleData = false
         reader.add(videoOut)
 
         var audioOut: AVAssetReaderTrackOutput?
@@ -117,7 +143,7 @@ enum FrameInterpolator {
 
         let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoIn.expectsMediaDataInRealTime = false
-        videoIn.transform = transform
+        videoIn.transform = writerTransform
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: videoIn,
             sourcePixelBufferAttributes: [
@@ -164,14 +190,17 @@ enum FrameInterpolator {
         )
         guard let pool = poolOut else { throw RenderError.frameCreationFailed }
 
+        Breadcrumb.set("запуск обработчика")
         let processor = VTFrameProcessor()
         try processor.startSession(configuration: config)
 
         guard writer.startWriting() else {
+            processor.endSession()
             throw RenderError.writer(writer.error?.localizedDescription ?? "не удалось начать запись")
         }
         writer.startSession(atSourceTime: .zero)
         guard reader.startReading() else {
+            processor.endSession()
             throw RenderError.reader(reader.error?.localizedDescription ?? "не удалось начать чтение")
         }
 
@@ -182,7 +211,7 @@ enum FrameInterpolator {
                 group.addTask {
                     try await processVideo(
                         videoOut: videoOut, videoIn: videoIn, adaptor: adaptor,
-                        writer: writer, processor: processor, pool: pool,
+                        writer: writer, processor: processor, pool: pool, rotate: rotate,
                         totalFrames: totalFrames, progress: progress
                     )
                 }
@@ -193,14 +222,19 @@ enum FrameInterpolator {
                 }
                 try await group.waitForAll()
             }
+
+            Breadcrumb.set("закрытие сессии обработчика, своб. память \(Breadcrumb.freeMemoryMB()) МБ")
             processor.endSession()
             sessionOpen = false
 
+            Breadcrumb.set("финализация файла (finishWriting), своб. память \(Breadcrumb.freeMemoryMB()) МБ")
+            progress(0.99, "Финализация файла…")
             await writer.finishWriting()
             guard writer.status == .completed else {
                 throw RenderError.writer(writer.error?.localizedDescription ?? "неизвестная ошибка")
             }
-            progress(1.0)
+            Breadcrumb.set("файл записан")
+            progress(1.0, "Файл готов")
         } catch {
             if sessionOpen { processor.endSession() }
             reader.cancelReading()
@@ -219,12 +253,17 @@ enum FrameInterpolator {
         writer: AVAssetWriter,
         processor: VTFrameProcessor,
         pool: CVPixelBufferPool,
+        rotate: Bool,
         totalFrames: Double,
-        progress: @Sendable (Double) -> Void
+        progress: ProgressHandler
     ) async throws {
 
         var previous: (buffer: CVPixelBuffer, pts: CMTime)?
         var count = 0.0
+
+        func nextSample() -> CMSampleBuffer? {
+            autoreleasepool { videoOut.copyNextSampleBuffer() }
+        }
 
         func append(_ buffer: CVPixelBuffer, _ pts: CMTime) async throws {
             try await waitUntilReady(videoIn, writer: writer)
@@ -233,10 +272,21 @@ enum FrameInterpolator {
             }
         }
 
-        while let sample = videoOut.copyNextSampleBuffer() {
+        func prepare(_ src: CVPixelBuffer) throws -> CVPixelBuffer {
+            guard rotate else { return src }
+            var out: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
+            guard let dst = out else { throw RenderError.frameCreationFailed }
+            try rotateClockwise90(src, into: dst)
+            CVBufferPropagateAttachments(src, dst)
+            return dst
+        }
+
+        while let sample = nextSample() {
             try Task.checkCancellation()
-            guard let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
+            guard let rawBuffer = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            let buffer = try prepare(rawBuffer)
 
             if let prev = previous {
                 // 1) исходный кадр
@@ -274,16 +324,19 @@ enum FrameInterpolator {
 
             previous = (buffer, pts)
             count += 1
-            if Int(count) % 4 == 0 {
-                progress(min(0.99, count / totalFrames))
+            if Int(count) % 10 == 0 {
+                Breadcrumb.set("кадр \(Int(count)) из ~\(Int(totalFrames)), своб. память \(Breadcrumb.freeMemoryMB()) МБ")
+                progress(min(0.98, count / totalFrames), "Обработка кадров")
             }
         }
 
         // последний кадр
+        Breadcrumb.set("запись последнего кадра, своб. память \(Breadcrumb.freeMemoryMB()) МБ")
         if let last = previous {
             try await append(last.buffer, last.pts)
         }
         videoIn.markAsFinished()
+        Breadcrumb.set("видеодорожка завершена")
     }
 
     // MARK: - Аудио (без перекодирования)
@@ -301,6 +354,45 @@ enum FrameInterpolator {
             }
         }
         audioIn.markAsFinished()
+    }
+
+    // MARK: - Поворот кадра на 90° по часовой (YCbCr 4:2:0, без потерь)
+
+    private static func rotateClockwise90(_ src: CVPixelBuffer, into dst: CVPixelBuffer) throws {
+        CVPixelBufferLockBaseAddress(src, .readOnly)
+        CVPixelBufferLockBaseAddress(dst, [])
+        defer {
+            CVPixelBufferUnlockBaseAddress(dst, [])
+            CVPixelBufferUnlockBaseAddress(src, .readOnly)
+        }
+
+        for plane in 0..<2 {
+            guard
+                let sBase = CVPixelBufferGetBaseAddressOfPlane(src, plane),
+                let dBase = CVPixelBufferGetBaseAddressOfPlane(dst, plane)
+            else { throw RenderError.frameCreationFailed }
+
+            var s = vImage_Buffer(
+                data: sBase,
+                height: vImagePixelCount(CVPixelBufferGetHeightOfPlane(src, plane)),
+                width: vImagePixelCount(CVPixelBufferGetWidthOfPlane(src, plane)),
+                rowBytes: CVPixelBufferGetBytesPerRowOfPlane(src, plane)
+            )
+            var d = vImage_Buffer(
+                data: dBase,
+                height: vImagePixelCount(CVPixelBufferGetHeightOfPlane(dst, plane)),
+                width: vImagePixelCount(CVPixelBufferGetWidthOfPlane(dst, plane)),
+                rowBytes: CVPixelBufferGetBytesPerRowOfPlane(dst, plane)
+            )
+            let direction = UInt8(kRotate90DegreesClockwise)
+            let flags = vImage_Flags(kvImageNoFlags)
+
+            // plane 0 — яркость (8 бит), plane 1 — пары Cb/Cr (16 бит на пиксель)
+            let error = plane == 0
+                ? vImageRotate90_Planar8(&s, &d, direction, 0, flags)
+                : vImageRotate90_Planar16U(&s, &d, direction, 0, flags)
+            guard error == kvImageNoError else { throw RenderError.frameCreationFailed }
+        }
     }
 
     // MARK: - Вспомогательное

@@ -30,7 +30,7 @@ struct VideoInfo {
 enum RenderState {
     case idle
     case rendering(Double)
-    case done(URL)
+    case done(URL, String)
     case failed(String)
 }
 
@@ -43,8 +43,15 @@ final class RenderViewModel: ObservableObject {
     @Published var smoothing = true
     @Published var bitrate: Double = 40
     @Published var state: RenderState = .idle
+    @Published var stageText = ""
+    @Published var previousCrash: String?
 
     private var task: Task<Void, Never>?
+
+    init() {
+        // Если прошлый рендер оборвался вылетом, здесь будет последний этап
+        previousCrash = Breadcrumb.last
+    }
 
     var isRendering: Bool {
         if case .rendering = state { return true }
@@ -54,6 +61,11 @@ final class RenderViewModel: ObservableObject {
     var estimatedSizeMB: Double {
         guard let info else { return 0 }
         return bitrate * info.duration / 8
+    }
+
+    func dismissCrashNote() {
+        Breadcrumb.clear()
+        previousCrash = nil
     }
 
     // MARK: Загрузка видео
@@ -100,11 +112,17 @@ final class RenderViewModel: ObservableObject {
     func render() {
         guard let source = sourceURL, !isRendering else { return }
         let settings = RenderSettings(bitrateMbps: bitrate, highQuality: smoothing)
-        let output = FileManager.default.temporaryDirectory
-            .appendingPathComponent("smooth_\(UUID().uuidString).mov")
+
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyyMMdd_HHmmss"
+        let output = documents.appendingPathComponent("Smooth_\(stamp.string(from: Date())).mov")
 
         player?.pause()
+        previousCrash = nil
+        stageText = "Подготовка"
         state = .rendering(0)
+        Breadcrumb.set("старт рендера")
         UIApplication.shared.isIdleTimerDisabled = true
 
         task = Task {
@@ -112,17 +130,31 @@ final class RenderViewModel: ObservableObject {
             do {
                 try await FrameInterpolator.render(
                     source: source, output: output, settings: settings,
-                    progress: { [weak self] value in
+                    progress: { [weak self] value, stage in
                         Task { @MainActor in
-                            if self?.isRendering == true { self?.state = .rendering(value) }
+                            guard let self, self.isRendering else { return }
+                            self.state = .rendering(value)
+                            self.stageText = stage
                         }
                     }
                 )
-                try await Self.saveToPhotos(output)
-                state = .done(output)
+
+                // Файл уже лежит в «Файлы» → Smooth Frames. Теперь пробуем положить в «Фото».
+                stageText = "Сохранение в «Фото»"
+                Breadcrumb.set("сохранение в Фото")
+                var message = "Готово! Видео сохранено в «Фото» и в «Файлы» → Smooth Frames."
+                do {
+                    try await Self.saveToPhotos(output)
+                } catch {
+                    message = "Готово! Видео лежит в «Файлы» → Smooth Frames. В «Фото» сохранить не вышло: \(error.localizedDescription)"
+                }
+                Breadcrumb.clear()
+                state = .done(output, message)
             } catch is CancellationError {
+                Breadcrumb.clear()
                 state = .idle
             } catch {
+                Breadcrumb.clear()
                 state = .failed(error.localizedDescription)
             }
         }
@@ -133,9 +165,12 @@ final class RenderViewModel: ObservableObject {
     }
 
     private static func saveToPhotos(_ url: URL) async throws {
+        guard Bundle.main.object(forInfoDictionaryKey: "NSPhotoLibraryAddUsageDescription") != nil else {
+            throw RenderError.writer("в приложении нет разрешения на Фото")
+        }
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else {
-            throw RenderError.writer("Нет доступа к Фото. Разреши добавление в Настройках.")
+            throw RenderError.writer("нет доступа к Фото, разреши его в Настройках")
         }
         try await PHPhotoLibrary.shared().performChanges {
             _ = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
