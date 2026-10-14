@@ -1,0 +1,41 @@
+name: SmoothFrames
+options:
+  bundleIdPrefix: com.personal
+  deploymentTarget:
+    iOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1"
+targets:
+  SmoothFrames:
+    type: application
+    platform: iOS
+    sources:
+      - path: .
+        includes:
+          - "*.swift"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Smooth Frames
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSPhotoLibraryAddUsageDescription: Приложение сохраняет обработанное видео в Фото.
+        NSPhotoLibraryUsageDescription: Приложение сохраняет обработанное видео в Фото.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.personal.smoothframes
+        ENABLE_PREVIEWS: NO
+schemes:
+  SmoothFrames:
+    build:
+      targets:
+        SmoothFrames: all
+    run:
+      config: Release
+    archive:
+      config: Release
