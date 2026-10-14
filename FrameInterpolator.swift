@@ -11,6 +11,10 @@ struct RenderSettings {
     var bitrateMbps: Double
     /// Режим повышенного качества интерполяции («сглаживание»)
     var highQuality: Bool
+    /// Сила размытия движения 1...100 (0 — выключено)
+    var motionBlur: Int
+    /// Резкость достроенных кадров 0...100 (0 — выключено)
+    var sharpness: Int
 }
 
 enum RenderError: LocalizedError {
@@ -175,6 +179,23 @@ enum FrameInterpolator {
             throw RenderError.configurationFailed
         }
 
+        var blurConfig: VTMotionBlurConfiguration?
+        if settings.motionBlur > 0 {
+            guard
+                VTMotionBlurConfiguration.isSupported,
+                let c = VTMotionBlurConfiguration(
+                    frameWidth: width,
+                    frameHeight: height,
+                    usePrecomputedFlow: false,
+                    qualityPrioritization: .normal,
+                    revision: .revision1
+                )
+            else {
+                throw RenderError.configurationFailed
+            }
+            blurConfig = c
+        }
+
         var poolOut: CVPixelBufferPool?
         CVPixelBufferPoolCreate(
             nil,
@@ -194,13 +215,30 @@ enum FrameInterpolator {
         let processor = VTFrameProcessor()
         try processor.startSession(configuration: config)
 
-        guard writer.startWriting() else {
+        var blurProcessorVar: VTFrameProcessor?
+        if let blurConfig {
+            let bp = VTFrameProcessor()
+            do {
+                try bp.startSession(configuration: blurConfig)
+            } catch {
+                processor.endSession()
+                throw error
+            }
+            blurProcessorVar = bp
+        }
+        let blurProcessor = blurProcessorVar
+        let endSessions = {
             processor.endSession()
+            blurProcessor?.endSession()
+        }
+
+        guard writer.startWriting() else {
+            endSessions()
             throw RenderError.writer(writer.error?.localizedDescription ?? "не удалось начать запись")
         }
         writer.startSession(atSourceTime: .zero)
         guard reader.startReading() else {
-            processor.endSession()
+            endSessions()
             throw RenderError.reader(reader.error?.localizedDescription ?? "не удалось начать чтение")
         }
 
@@ -212,6 +250,7 @@ enum FrameInterpolator {
                     try await processVideo(
                         videoOut: videoOut, videoIn: videoIn, adaptor: adaptor,
                         writer: writer, processor: processor, pool: pool, rotate: rotate,
+                        blurProcessor: blurProcessor, blurStrength: settings.motionBlur, sharpness: settings.sharpness,
                         totalFrames: totalFrames, progress: progress
                     )
                 }
@@ -224,7 +263,7 @@ enum FrameInterpolator {
             }
 
             Breadcrumb.set("закрытие сессии обработчика, своб. память \(Breadcrumb.freeMemoryMB()) МБ")
-            processor.endSession()
+            endSessions()
             sessionOpen = false
 
             Breadcrumb.set("финализация файла (finishWriting), своб. память \(Breadcrumb.freeMemoryMB()) МБ")
@@ -236,7 +275,7 @@ enum FrameInterpolator {
             Breadcrumb.set("файл записан")
             progress(1.0, "Файл готов")
         } catch {
-            if sessionOpen { processor.endSession() }
+            if sessionOpen { endSessions() }
             reader.cancelReading()
             writer.cancelWriting()
             try? FileManager.default.removeItem(at: output)
@@ -254,6 +293,9 @@ enum FrameInterpolator {
         processor: VTFrameProcessor,
         pool: CVPixelBufferPool,
         rotate: Bool,
+        blurProcessor: VTFrameProcessor?,
+        blurStrength: Int,
+        sharpness: Int,
         totalFrames: Double,
         progress: ProgressHandler
     ) async throws {
@@ -269,6 +311,23 @@ enum FrameInterpolator {
             try await waitUntilReady(videoIn, writer: writer)
             if !adaptor.append(buffer, withPresentationTime: pts) {
                 throw RenderError.writer(writer.error?.localizedDescription ?? "не удалось добавить кадр")
+            }
+        }
+
+        let sharpener = sharpness > 0 ? LumaSharpener(strength: sharpness) : nil
+
+        let blurStage = blurProcessor.map {
+            MotionBlurStage(processor: $0, pool: pool, strength: blurStrength)
+        }
+
+        // Выходной кадр: через размытие движения (если включено) и в запись
+        func emit(_ buffer: CVPixelBuffer, _ pts: CMTime) async throws {
+            if let stage = blurStage {
+                if let out = try await stage.push(buffer, pts) {
+                    try await append(out.buffer, out.pts)
+                }
+            } else {
+                try await append(buffer, pts)
             }
         }
 
@@ -290,7 +349,7 @@ enum FrameInterpolator {
 
             if let prev = previous {
                 // 1) исходный кадр
-                try await append(prev.buffer, prev.pts)
+                try await emit(prev.buffer, prev.pts)
 
                 // 2) промежуточный кадр на середине интервала
                 let delta = CMTimeSubtract(pts, prev.pts)
@@ -318,7 +377,9 @@ enum FrameInterpolator {
 
                     CVBufferPropagateAttachments(prev.buffer, dst)
                     try await processor.process(parameters: params)
-                    try await append(dst, mid)
+                    // Достроенные кадры чуть мягче оригинальных — подтягиваем резкость
+                    if let sharpener { try sharpener.apply(to: dst) }
+                    try await emit(dst, mid)
                 }
             }
 
@@ -333,7 +394,10 @@ enum FrameInterpolator {
         // последний кадр
         Breadcrumb.set("запись последнего кадра, своб. память \(Breadcrumb.freeMemoryMB()) МБ")
         if let last = previous {
-            try await append(last.buffer, last.pts)
+            try await emit(last.buffer, last.pts)
+        }
+        if let stage = blurStage, let out = try await stage.flush() {
+            try await append(out.buffer, out.pts)
         }
         videoIn.markAsFinished()
         Breadcrumb.set("видеодорожка завершена")
@@ -429,5 +493,128 @@ enum FrameInterpolator {
             AVVideoTransferFunctionKey: transfer,
             AVVideoYCbCrMatrixKey: matrix
         ]
+    }
+}
+
+
+/// Размытие движения для итоговой последовательности кадров (оригинальные + достроенные).
+/// Каждому кадру нужны соседи (предыдущий и следующий), поэтому работаем с задержкой в один кадр.
+final class MotionBlurStage {
+    typealias Frame = (buffer: CVPixelBuffer, pts: CMTime)
+
+    private let processor: VTFrameProcessor
+    private let pool: CVPixelBufferPool
+    private let strength: Int
+    private var previous: Frame?
+    private var current: Frame?
+
+    init(processor: VTFrameProcessor, pool: CVPixelBufferPool, strength: Int) {
+        self.processor = processor
+        self.pool = pool
+        self.strength = min(100, max(1, strength))
+    }
+
+    /// Принимает следующий кадр; возвращает готовый (размытый) предыдущий, если он есть.
+    func push(_ buffer: CVPixelBuffer, _ pts: CMTime) async throws -> Frame? {
+        guard let cur = current else {
+            current = (buffer, pts)
+            return nil
+        }
+        let out = try await blur(cur, previous: previous, next: (buffer, pts))
+        previous = cur
+        current = (buffer, pts)
+        return out
+    }
+
+    /// Обрабатывает самый последний кадр (следующего нет).
+    func flush() async throws -> Frame? {
+        guard let cur = current else { return nil }
+        let out = try await blur(cur, previous: previous, next: nil)
+        current = nil
+        previous = nil
+        return out
+    }
+
+    private func blur(_ source: Frame, previous: Frame?, next: Frame?) async throws -> Frame {
+        var dstBuffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dstBuffer)
+        guard
+            let dst = dstBuffer,
+            let srcFrame = VTFrameProcessorFrame(buffer: source.buffer, presentationTimeStamp: source.pts),
+            let dstFrame = VTFrameProcessorFrame(buffer: dst, presentationTimeStamp: source.pts)
+        else {
+            throw RenderError.frameCreationFailed
+        }
+        let prevFrame = previous.flatMap {
+            VTFrameProcessorFrame(buffer: $0.buffer, presentationTimeStamp: $0.pts)
+        }
+        let nextFrame = next.flatMap {
+            VTFrameProcessorFrame(buffer: $0.buffer, presentationTimeStamp: $0.pts)
+        }
+        guard let params = VTMotionBlurParameters(
+            sourceFrame: srcFrame,
+            nextFrame: nextFrame,
+            previousFrame: prevFrame,
+            nextOpticalFlow: nil,
+            previousOpticalFlow: nil,
+            motionBlurStrength: strength,
+            submissionMode: .sequential,
+            destinationFrame: dstFrame
+        ) else {
+            throw RenderError.frameCreationFailed
+        }
+        CVBufferPropagateAttachments(source.buffer, dst)
+        try await processor.process(parameters: params)
+        return (dst, source.pts)
+    }
+}
+
+
+/// Лёгкая резкость по яркости (Y) для достроенных кадров. Цвет не трогаем, оригинальные кадры не трогаем.
+final class LumaSharpener {
+    private let amount: Int16
+    private var scratch: UnsafeMutableRawPointer?
+    private var scratchSize = 0
+
+    init(strength: Int) {
+        // 0...100 на ползунке → сила ядра 1...50
+        amount = Int16(min(50, max(1, strength / 2)))
+    }
+
+    deinit { scratch?.deallocate() }
+
+    func apply(to buffer: CVPixelBuffer) throws {
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else {
+            throw RenderError.frameCreationFailed
+        }
+        let w = CVPixelBufferGetWidthOfPlane(buffer, 0)
+        let h = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+
+        let needed = w * h
+        if scratchSize < needed {
+            scratch?.deallocate()
+            scratch = UnsafeMutableRawPointer.allocate(byteCount: needed, alignment: 64)
+            scratchSize = needed
+        }
+        guard let scratch else { throw RenderError.frameCreationFailed }
+
+        var src = vImage_Buffer(data: base, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: rowBytes)
+        var dst = vImage_Buffer(data: scratch, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: w)
+
+        // Ядро 3×3: исходный пиксель + amount × (лапласиан). Сумма = 100, делитель = 100.
+        let a = amount
+        let kernel: [Int16] = [0, -a, 0, -a, 100 + 4 * a, -a, 0, -a, 0]
+        let error = kernel.withUnsafeBufferPointer { k in
+            vImageConvolve_Planar8(&src, &dst, nil, 0, 0, k.baseAddress!, 3, 3, 100, 0, vImage_Flags(kvImageEdgeExtend))
+        }
+        guard error == kvImageNoError else { throw RenderError.frameCreationFailed }
+
+        for row in 0..<h {
+            memcpy(base + row * rowBytes, scratch + row * w, w)
+        }
     }
 }

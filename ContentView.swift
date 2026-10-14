@@ -94,11 +94,53 @@ struct ContentView: View {
 
             Toggle(isOn: $vm.smoothing) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Сглаживание")
-                    Text("Повышенное качество расчёта движения: меньше ряби и артефактов, но дольше рендер")
+                    Text("Сглаживание (экспериментально)")
+                    Text("Режим повышенного качества. На резких поворотах камеры может рвать картинку — тогда выключи")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Размытие движения")
+                    Spacer()
+                    Text(vm.motionBlur == 0 ? "Выкл" : "\(Int(vm.motionBlur))").monospacedDigit()
+                }
+                Slider(value: $vm.motionBlur, in: 0...100, step: 5)
+
+                HStack(spacing: 8) {
+                    ForEach([0.0, 25.0, 50.0, 75.0], id: \.self) { value in
+                        Button(value == 0 ? "Выкл" : "\(Int(value))") { vm.motionBlur = value }
+                            .buttonStyle(.bordered)
+                            .tint(vm.motionBlur == value ? .accentColor : .gray)
+                    }
+                }
+
+                Text("Имитирует выдержку камеры: быстрые объекты слегка смазываются. Рендер идёт заметно дольше.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Резкость достроенных кадров")
+                    Spacer()
+                    Text(vm.sharpness == 0 ? "Выкл" : "\(Int(vm.sharpness))").monospacedDigit()
+                }
+                Slider(value: $vm.sharpness, in: 0...100, step: 5)
+
+                HStack(spacing: 8) {
+                    ForEach([0.0, 25.0, 50.0, 75.0], id: \.self) { value in
+                        Button(value == 0 ? "Выкл" : "\(Int(value))") { vm.sharpness = value }
+                            .buttonStyle(.bordered)
+                            .tint(vm.sharpness == value ? .accentColor : .gray)
+                    }
+                }
+
+                Text("Подтягивает чёткость промежуточных кадров, они обычно мягче оригинальных. Исходные кадры не меняются.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -166,6 +208,11 @@ struct ContentView: View {
             }
         case .done(let url, let message):
             VStack(spacing: 10) {
+                if let player = vm.resultPlayer {
+                    VideoPlayer(player: player)
+                        .frame(height: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
                 Label(message, systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                 ShareLink(item: url) {

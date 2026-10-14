@@ -40,7 +40,10 @@ final class RenderViewModel: ObservableObject {
     @Published var info: VideoInfo?
     @Published var player: AVPlayer?
     @Published var isLoading = false
-    @Published var smoothing = true
+    @Published var smoothing = false
+    @Published var motionBlur: Double = 0
+    @Published var sharpness: Double = 0
+    @Published var resultPlayer: AVPlayer?
     @Published var bitrate: Double = 40
     @Published var state: RenderState = .idle
     @Published var stageText = ""
@@ -74,6 +77,7 @@ final class RenderViewModel: ObservableObject {
         guard let item else { return }
         isLoading = true
         state = .idle
+        resultPlayer = nil
         defer { isLoading = false }
         do {
             guard let file = try await item.loadTransferable(type: VideoFile.self) else {
@@ -111,7 +115,7 @@ final class RenderViewModel: ObservableObject {
 
     func render() {
         guard let source = sourceURL, !isRendering else { return }
-        let settings = RenderSettings(bitrateMbps: bitrate, highQuality: smoothing)
+        let settings = RenderSettings(bitrateMbps: bitrate, highQuality: smoothing, motionBlur: Int(motionBlur), sharpness: Int(sharpness))
 
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let stamp = DateFormatter()
@@ -120,6 +124,7 @@ final class RenderViewModel: ObservableObject {
 
         player?.pause()
         previousCrash = nil
+        resultPlayer = nil
         stageText = "Подготовка"
         state = .rendering(0)
         Breadcrumb.set("старт рендера")
@@ -149,6 +154,7 @@ final class RenderViewModel: ObservableObject {
                     message = "Готово! Видео лежит в «Файлы» → Smooth Frames. В «Фото» сохранить не вышло: \(error.localizedDescription)"
                 }
                 Breadcrumb.clear()
+                resultPlayer = AVPlayer(url: output)
                 state = .done(output, message)
             } catch is CancellationError {
                 Breadcrumb.clear()
