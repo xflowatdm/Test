@@ -4,7 +4,12 @@ import SwiftUI
 struct SmoothFramesApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            TabView {
+                ContentView()
+                    .tabItem { Label("Рендер", systemImage: "film") }
+                ColorView()
+                    .tabItem { Label("Цвет", systemImage: "slider.horizontal.3") }
+            }
         }
     }
 }

@@ -185,7 +185,7 @@ final class RenderViewModel: ObservableObject {
         task?.cancel()
     }
 
-    private static func saveToPhotos(_ url: URL) async throws {
+    static func saveToPhotos(_ url: URL) async throws {
         guard Bundle.main.object(forInfoDictionaryKey: "NSPhotoLibraryAddUsageDescription") != nil else {
             throw RenderError.writer("в приложении нет разрешения на Фото")
         }

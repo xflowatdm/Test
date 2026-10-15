@@ -103,8 +103,8 @@ enum Breadcrumb {
 
 enum FrameInterpolator {
 
-    private static let format8 = OSType(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-    private static let format10 = OSType(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+    static let format8 = OSType(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+    static let format10 = OSType(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
 
     static func render(
         source: URL,
@@ -557,7 +557,7 @@ enum FrameInterpolator {
 
     // MARK: - Аудио (без перекодирования)
 
-    private static func copyAudio(
+    static func copyAudio(
         audioOut: AVAssetReaderTrackOutput,
         audioIn: AVAssetWriterInput,
         writer: AVAssetWriter
@@ -623,7 +623,7 @@ enum FrameInterpolator {
 
     // MARK: - Вспомогательное
 
-    private static func waitUntilReady(_ input: AVAssetWriterInput, writer: AVAssetWriter) async throws {
+    static func waitUntilReady(_ input: AVAssetWriterInput, writer: AVAssetWriter) async throws {
         while !input.isReadyForMoreMediaData {
             try Task.checkCancellation()
             if writer.status == .failed {
@@ -635,7 +635,7 @@ enum FrameInterpolator {
 
     /// Цветовая схема исходника (в т.ч. HDR/HLG и Display P3).
     /// Если AVAssetWriter не примет значения, в вызывающем коде пробуем без них.
-    private static func colorProperties(from desc: CMFormatDescription?) -> [String: String]? {
+    static func colorProperties(from desc: CMFormatDescription?) -> [String: String]? {
         guard
             let desc,
             let ext = CMFormatDescriptionGetExtensions(desc) as? [String: Any],
