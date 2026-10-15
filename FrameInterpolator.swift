@@ -59,6 +59,8 @@ struct RenderSettings {
     var neural: NeuralModel?
     /// Сила нейро-улучшения 0...100
     var neuralStrength: Double
+    /// Цветокоррекция из вкладки «Цвет» (nil — выключено)
+    var grade: GradeSnapshot?
 }
 
 enum RenderError: LocalizedError {
@@ -310,6 +312,7 @@ enum FrameInterpolator {
             neuralVar = try NeuralEnhancer(modelType: neuralModel, strength: settings.neuralStrength)
         }
         let neuralEnhancer = neuralVar
+        let gradeStage = settings.grade.map { GradeStage(snapshot: $0) }
 
         Breadcrumb.set("запуск обработчика")
         let processor = VTFrameProcessor()
@@ -349,7 +352,7 @@ enum FrameInterpolator {
                 group.addTask {
                     try await processVideo(
                         videoOut: videoOut, videoIn: videoIn, adaptor: adaptor,
-                        writer: writer, processor: processor, pool: pool, rotate: rotate, enhancer: neuralEnhancer,
+                        writer: writer, processor: processor, pool: pool, rotate: rotate, enhancer: neuralEnhancer, gradeStage: gradeStage,
                         blurProcessor: blurProcessor, blurStrength: settings.motionBlur, sharpness: settings.sharpness,
                         totalFrames: totalFrames, progress: progress
                     )
@@ -460,6 +463,7 @@ enum FrameInterpolator {
         pool: CVPixelBufferPool,
         rotate: Bool,
         enhancer: NeuralEnhancer?,
+        gradeStage: GradeStage?,
         blurProcessor: VTFrameProcessor?,
         blurStrength: Int,
         sharpness: Int,
@@ -515,6 +519,9 @@ enum FrameInterpolator {
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
             if let enhancer {
                 rawBuffer = try await enhancer.enhance(rawBuffer)
+            }
+            if let gradeStage {
+                rawBuffer = try gradeStage.apply(rawBuffer)
             }
             let buffer = try prepare(rawBuffer)
 

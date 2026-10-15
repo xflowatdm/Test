@@ -115,6 +115,13 @@ struct ColorView: View {
                 Button("Сбросить") { vm.resetAll() }.font(.footnote)
             }
 
+            HStack(spacing: 8) {
+                Button("HDR-игра") { vm.applyPreset(.hdrGame) }
+                    .buttonStyle(.bordered)
+                Button("Чёткая картинка") { vm.applyPreset(.crisp) }
+                    .buttonStyle(.bordered)
+            }
+
             Text("Свет").font(.subheadline).foregroundStyle(.secondary)
             GradeSlider(title: "Экспозиция", value: $vm.params.exposure, range: -2...2, neutral: 0)
             GradeSlider(title: "Контраст", value: $vm.params.contrast, range: 0.5...1.5, neutral: 1)
@@ -126,6 +133,11 @@ struct ColorView: View {
             GradeSlider(title: "Оттенок", value: $vm.params.tint, range: -100...100, neutral: 0, format: "%.0f")
             GradeSlider(title: "Насыщенность", value: $vm.params.saturation, range: 0...2, neutral: 1)
             GradeSlider(title: "Живость", value: $vm.params.vibrance, range: -1...1, neutral: 0)
+
+            Text("Чёткость и текстуры").font(.subheadline).foregroundStyle(.secondary)
+            GradeSlider(title: "Сглаживание шума и текстур", value: $vm.params.denoise, range: 0...1, neutral: 0)
+            GradeSlider(title: "Чёткость (локальный контраст)", value: $vm.params.clarity, range: 0...1, neutral: 0)
+            GradeSlider(title: "S-кривая (глубина)", value: $vm.params.curve, range: 0...1, neutral: 0)
 
             Text("Детали").font(.subheadline).foregroundStyle(.secondary)
             GradeSlider(title: "Резкость", value: $vm.params.sharpness, range: 0...2, neutral: 0)

@@ -47,6 +47,8 @@ final class RenderViewModel: ObservableObject {
     @Published var neuralEnabled = false
     @Published var neuralModel: NeuralModel = NeuralModel.available.first ?? .general
     @Published var neuralStrength: Double = 60
+    @Published var applyColor = false
+    @Published var colorReady = false
     @Published var resultPlayer: AVPlayer?
     @Published var bitrate: Double = 40
     @Published var state: RenderState = .idle
@@ -84,6 +86,11 @@ final class RenderViewModel: ObservableObject {
         guard let info else { return 0 }
         let pixels = Double(info.width * info.height) / (1920.0 * 1080.0)
         return base1080p30 * pixels * (info.fps * 2 / 30)
+    }
+
+    func refreshColorState() {
+        colorReady = GradeStore.isConfigured
+        if !colorReady { applyColor = false }
     }
 
     func dismissCrashNote() {
@@ -135,8 +142,10 @@ final class RenderViewModel: ObservableObject {
 
     func render() {
         guard let source = sourceURL, !isRendering else { return }
+        let gradeSnapshot: GradeSnapshot? = (applyColor && GradeStore.isConfigured) ? GradeStore.snapshot() : nil
         let settings = RenderSettings(bitrateMbps: bitrate, highQuality: smoothing, motionBlur: Int(motionBlur), sharpness: Int(sharpness), codec: codec,
-            neural: neuralEnabled ? neuralModel : nil, neuralStrength: neuralStrength)
+            neural: neuralEnabled ? neuralModel : nil, neuralStrength: neuralStrength,
+            grade: gradeSnapshot)
 
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let stamp = DateFormatter()

@@ -2,6 +2,7 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import CoreGraphics
 import AVFoundation
+import CoreVideo
 
 // MARK: - Параметры
 
@@ -16,6 +17,9 @@ struct GradeParams: Equatable {
     var shadows: Double = 0         // -100...100
     var sharpness: Double = 0       // 0...2
     var vignette: Double = 0        // 0...1
+    var denoise: Double = 0         // 0...1 сглаживание шума и текстур (края сохраняются)
+    var clarity: Double = 0         // 0...1 локальный контраст («HDR-вид»)
+    var curve: Double = 0           // 0...1 S-кривая (глубина)
     /// Сила автоподбора по референсу 0...1
     var matchStrength: Double = 1
 }
@@ -64,6 +68,15 @@ enum ColorGrader {
         var img = input
         let extent = input.extent
 
+        // 0) Шумоподавление и сглаживание текстур (края сохраняются)
+        if p.denoise > 0.001 {
+            let f = CIFilter.noiseReduction()
+            f.inputImage = img
+            f.noiseLevel = Float(p.denoise * 0.08)
+            f.sharpness = 0.6
+            if let out = f.outputImage { img = out }
+        }
+
         // 1) Подбор по референсу (кривые RGB)
         if let m = match, p.matchStrength > 0.001 {
             let f = CIFilter.colorPolynomial()
@@ -107,6 +120,19 @@ enum ColorGrader {
             if let out = f.outputImage { img = out }
         }
 
+        // 4b) S-кривая
+        if p.curve > 0.001 {
+            let k = p.curve * 0.1
+            let f = CIFilter.toneCurve()
+            f.inputImage = img
+            f.point0 = CGPoint(x: 0, y: 0)
+            f.point1 = CGPoint(x: 0.25, y: 0.25 - k)
+            f.point2 = CGPoint(x: 0.5, y: 0.5)
+            f.point3 = CGPoint(x: 0.75, y: 0.75 + k)
+            f.point4 = CGPoint(x: 1, y: 1)
+            if let out = f.outputImage { img = out }
+        }
+
         // 5) Контраст и насыщенность
         if abs(p.contrast - 1) > 0.001 || abs(p.saturation - 1) > 0.001 {
             let f = CIFilter.colorControls()
@@ -122,6 +148,15 @@ enum ColorGrader {
             let f = CIFilter.vibrance()
             f.inputImage = img
             f.amount = Float(p.vibrance)
+            if let out = f.outputImage { img = out }
+        }
+
+        // 6b) Чёткость (локальный контраст): нерезкая маска с большим радиусом
+        if p.clarity > 0.001 {
+            let f = CIFilter.unsharpMask()
+            f.inputImage = img
+            f.radius = Float(max(extent.width, extent.height) * 0.012)
+            f.intensity = Float(p.clarity * 0.9)
             if let out = f.outputImage { img = out }
         }
 
@@ -306,5 +341,104 @@ enum ColorMatcher {
             previous = v
         }
         return true
+    }
+}
+
+
+// MARK: - Пресеты
+
+extension GradeParams {
+    /// «HDR-вид» для игровых записей: локальный контраст, резкие края, сглаженные текстуры, насыщенный цвет
+    static var hdrGame: GradeParams {
+        var p = GradeParams()
+        p.denoise = 0.30
+        p.clarity = 0.55
+        p.sharpness = 0.7
+        p.curve = 0.45
+        p.contrast = 1.08
+        p.saturation = 1.12
+        p.vibrance = 0.35
+        p.highlights = 15
+        p.shadows = 30
+        return p
+    }
+
+    /// Более деликатный вариант: чище и чётче, без сильного изменения цвета
+    static var crisp: GradeParams {
+        var p = GradeParams()
+        p.denoise = 0.20
+        p.clarity = 0.30
+        p.sharpness = 0.5
+        p.curve = 0.20
+        p.vibrance = 0.15
+        return p
+    }
+}
+
+// MARK: - Общий цвет для вкладки «Рендер»
+
+struct GradeSnapshot {
+    var params: GradeParams
+    var match: MatchCurve?
+}
+
+/// Сюда вкладка «Цвет» кладёт текущие настройки, а вкладка «Рендер» применяет их за один проход
+enum GradeStore {
+    static let box = GradeBox()
+
+    static func snapshot() -> GradeSnapshot {
+        let (p, m) = box.get()
+        return GradeSnapshot(params: p, match: m)
+    }
+
+    static var isConfigured: Bool {
+        let s = snapshot()
+        return s.params != GradeParams() || s.match != nil
+    }
+}
+
+/// Применяет цвет к кадрам внутри рендера (кадр YCbCr → кадр YCbCr того же формата и размера)
+final class GradeStage {
+    private let snapshot: GradeSnapshot
+    private var pool: CVPixelBufferPool?
+    private var key = ""
+
+    init(snapshot: GradeSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func apply(_ src: CVPixelBuffer) throws -> CVPixelBuffer {
+        let w = CVPixelBufferGetWidth(src)
+        let h = CVPixelBufferGetHeight(src)
+        let format = CVPixelBufferGetPixelFormatType(src)
+        let newKey = "\(w)x\(h)-\(format)"
+
+        if pool == nil || key != newKey {
+            var out: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(
+                nil, nil,
+                [
+                    kCVPixelBufferPixelFormatTypeKey as String: format,
+                    kCVPixelBufferWidthKey as String: w,
+                    kCVPixelBufferHeightKey as String: h,
+                    kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+                    kCVPixelBufferMetalCompatibilityKey as String: true
+                ] as CFDictionary,
+                &out
+            )
+            guard let p = out else { throw RenderError.frameCreationFailed }
+            pool = p
+            key = newKey
+        }
+        guard let pool else { throw RenderError.frameCreationFailed }
+
+        var dstOut: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dstOut)
+        guard let dst = dstOut else { throw RenderError.frameCreationFailed }
+
+        CVBufferPropagateAttachments(src, dst)
+        let graded = ColorGrader.apply(to: CIImage(cvPixelBuffer: src), params: snapshot.params, match: snapshot.match)
+        ColorGrader.context.render(graded, to: dst)
+        return dst
     }
 }

@@ -116,7 +116,15 @@ final class ColorViewModel: ObservableObject {
 
     // MARK: Просмотр
 
+    func applyPreset(_ preset: GradeParams) {
+        var p = preset
+        p.matchStrength = params.matchStrength
+        params = p
+    }
+
     func pushPreview() {
+        // настоящие значения (без режима «показать оригинал») — для вкладки «Рендер»
+        GradeStore.box.set(params: params, match: match)
         if showOriginal {
             previewBox.set(params: GradeParams(), match: nil)
         } else {

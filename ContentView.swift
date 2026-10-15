@@ -26,6 +26,7 @@ struct ContentView: View {
         .onChange(of: pickerItem) { _, item in
             Task { await vm.load(item) }
         }
+        .onAppear { vm.refreshColorState() }
     }
 
     // MARK: Прошлый вылет
@@ -139,6 +140,18 @@ struct ContentView: View {
                 }
 
                 Text("Подтягивает чёткость промежуточных кадров, они обычно мягче оригинальных. Исходные кадры не меняются.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: $vm.applyColor) {
+                    Text("Применить цветокоррекцию из вкладки «Цвет»")
+                }
+                .disabled(!vm.colorReady)
+                Text(vm.colorReady
+                     ? "Цвет, чёткость и текстуры применятся в том же проходе, без лишнего пережатия."
+                     : "Сначала настрой цвет на вкладке «Цвет» (например, пресет «HDR-игра»).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
