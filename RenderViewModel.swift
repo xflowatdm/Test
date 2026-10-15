@@ -43,6 +43,7 @@ final class RenderViewModel: ObservableObject {
     @Published var smoothing = false
     @Published var motionBlur: Double = 0
     @Published var sharpness: Double = 0
+    @Published var codec: VideoCodec = .hevc10
     @Published var resultPlayer: AVPlayer?
     @Published var bitrate: Double = 40
     @Published var state: RenderState = .idle
@@ -63,7 +64,21 @@ final class RenderViewModel: ObservableObject {
 
     var estimatedSizeMB: Double {
         guard let info else { return 0 }
-        return bitrate * info.duration / 8
+        switch codec {
+        case .hevc10, .hevc8:
+            return bitrate * info.duration / 8
+        case .proRes422:
+            return proResMbps(base1080p30: 147) * info.duration / 8
+        case .proRes422HQ:
+            return proResMbps(base1080p30: 220) * info.duration / 8
+        }
+    }
+
+    /// Ориентировочный поток ProRes: масштабируем от 1080p30 по числу пикселей и частоте кадров
+    private func proResMbps(base1080p30: Double) -> Double {
+        guard let info else { return 0 }
+        let pixels = Double(info.width * info.height) / (1920.0 * 1080.0)
+        return base1080p30 * pixels * (info.fps * 2 / 30)
     }
 
     func dismissCrashNote() {
@@ -115,7 +130,7 @@ final class RenderViewModel: ObservableObject {
 
     func render() {
         guard let source = sourceURL, !isRendering else { return }
-        let settings = RenderSettings(bitrateMbps: bitrate, highQuality: smoothing, motionBlur: Int(motionBlur), sharpness: Int(sharpness))
+        let settings = RenderSettings(bitrateMbps: bitrate, highQuality: smoothing, motionBlur: Int(motionBlur), sharpness: Int(sharpness), codec: codec)
 
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let stamp = DateFormatter()

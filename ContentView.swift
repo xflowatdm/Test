@@ -143,6 +143,22 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Кодек")
+                    Spacer()
+                    Picker("Кодек", selection: $vm.codec) {
+                        ForEach(VideoCodec.allCases) { codec in
+                            Text(codec.title).tag(codec)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                Text(vm.codec.details)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Битрейт")
@@ -159,10 +175,13 @@ struct ContentView: View {
                     }
                 }
 
-                Text("≈ \(Int(vm.estimatedSizeMB)) МБ · кодек HEVC")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
+            .disabled(!vm.codec.usesBitrate)
+            .opacity(vm.codec.usesBitrate ? 1 : 0.35)
+
+            Text("≈ \(Int(vm.estimatedSizeMB)) МБ · \(vm.codec.title)\(vm.codec.usesBitrate ? "" : " (ориентировочно, у ProRes нет битрейта)")")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding()
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))

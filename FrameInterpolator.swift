@@ -6,8 +6,46 @@ import os
 
 typealias ProgressHandler = @Sendable (Double, String) -> Void
 
+// MARK: - Кодеки
+
+enum VideoCodec: String, CaseIterable, Identifiable {
+    case hevc10
+    case hevc8
+    case proRes422
+    case proRes422HQ
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .hevc10: return "HEVC 10 бит"
+        case .hevc8: return "HEVC 8 бит"
+        case .proRes422: return "ProRes 422"
+        case .proRes422HQ: return "ProRes 422 HQ"
+        }
+    }
+
+    var details: String {
+        switch self {
+        case .hevc10:
+            return "Рекомендуется. Лучшее качество при разумном размере файла, меньше полос в градиентах, сохраняет HDR."
+        case .hevc8:
+            return "Меньше нагрузка и совместимость, но возможны полосы в градиентах."
+        case .proRes422:
+            return "Студийный кодек почти без потерь. Файлы в 5–10 раз больше. Нужен iPhone 15 Pro или новее."
+        case .proRes422HQ:
+            return "Максимальное качество, визуально без потерь. Очень большие файлы. Нужен iPhone 15 Pro или новее."
+        }
+    }
+
+    var usesBitrate: Bool { self == .hevc10 || self == .hevc8 }
+    var wantsTenBit: Bool { self != .hevc8 }
+}
+
+// MARK: - Настройки и ошибки
+
 struct RenderSettings {
-    /// Битрейт результата в Мбит/с
+    /// Битрейт результата в Мбит/с (для HEVC)
     var bitrateMbps: Double
     /// Режим повышенного качества интерполяции («сглаживание»)
     var highQuality: Bool
@@ -15,6 +53,8 @@ struct RenderSettings {
     var motionBlur: Int
     /// Резкость достроенных кадров 0...100 (0 — выключено)
     var sharpness: Int
+    /// Кодек результата
+    var codec: VideoCodec
 }
 
 enum RenderError: LocalizedError {
@@ -23,6 +63,7 @@ enum RenderError: LocalizedError {
     case unsupportedSize(Int, Int)
     case configurationFailed
     case frameCreationFailed
+    case codecUnsupported(String)
     case reader(String)
     case writer(String)
 
@@ -38,6 +79,8 @@ enum RenderError: LocalizedError {
             return "Не удалось настроить обработчик кадров."
         case .frameCreationFailed:
             return "Не удалось подготовить кадр для обработки."
+        case .codecUnsupported(let name):
+            return "Этот iPhone не может записать видео в формате «\(name)». Выбери HEVC."
         case .reader(let m):
             return "Ошибка чтения видео: \(m)"
         case .writer(let m):
@@ -56,9 +99,12 @@ enum Breadcrumb {
     static func freeMemoryMB() -> Int { Int(os_proc_available_memory()) / 1_048_576 }
 }
 
+// MARK: - Конвейер
+
 enum FrameInterpolator {
 
-    private static let pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    private static let format8 = OSType(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+    private static let format10 = OSType(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
 
     static func render(
         source: URL,
@@ -108,65 +154,10 @@ enum FrameInterpolator {
         let audioFormat = try await audioTrack?.load(.formatDescriptions).first
 
         let sourceFPS = nominalFPS > 0 ? Double(nominalFPS) : 60
-        let outputFPS = sourceFPS * 2
+        let outputFPS = Int((sourceFPS * 2).rounded())
         let totalFrames = max(1, duration.seconds * sourceFPS)
 
-        // MARK: Reader
-        let reader = try AVAssetReader(asset: asset)
-        let videoOut = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
-            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-            kCVPixelBufferMetalCompatibilityKey as String: true
-        ])
-        reader.add(videoOut)
-
-        var audioOut: AVAssetReaderTrackOutput?
-        if let audioTrack {
-            let o = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
-            reader.add(o)
-            audioOut = o
-        }
-
-        // MARK: Writer
-        try? FileManager.default.removeItem(at: output)
-        let writer = try AVAssetWriter(outputURL: output, fileType: .mov)
-
-        var videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.hevc,
-            AVVideoWidthKey: width,
-            AVVideoHeightKey: height,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: Int(settings.bitrateMbps * 1_000_000),
-                AVVideoExpectedSourceFrameRateKey: Int(outputFPS.rounded()),
-                AVVideoMaxKeyFrameIntervalKey: Int(outputFPS.rounded())
-            ] as [String: Any]
-        ]
-        if let color = colorProperties(from: videoFormats.first) {
-            videoSettings[AVVideoColorPropertiesKey] = color
-        }
-
-        let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoIn.expectsMediaDataInRealTime = false
-        videoIn.transform = writerTransform
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: videoIn,
-            sourcePixelBufferAttributes: [
-                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
-                kCVPixelBufferWidthKey as String: width,
-                kCVPixelBufferHeightKey as String: height
-            ]
-        )
-        writer.add(videoIn)
-
-        var audioIn: AVAssetWriterInput?
-        if audioOut != nil {
-            let a = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: audioFormat)
-            a.expectsMediaDataInRealTime = false
-            writer.add(a)
-            audioIn = a
-        }
-
-        // MARK: Обработчик кадров
+        // MARK: Настройки обработчиков
         let quality: VTFrameRateConversionConfiguration.QualityPrioritization =
             settings.highQuality ? .quality : .normal
         guard let config = VTFrameRateConversionConfiguration(
@@ -196,20 +187,113 @@ enum FrameInterpolator {
             blurConfig = c
         }
 
-        var poolOut: CVPixelBufferPool?
-        CVPixelBufferPoolCreate(
-            nil,
-            [kCVPixelBufferPoolMinimumBufferCountKey as String: 4] as CFDictionary,
-            [
+        // 10 бит используем, только если его поддерживают все обработчики
+        let frcSupportsTen = config.frameSupportedPixelFormats.contains { ($0 as NSNumber).uint32Value == format10 }
+        let blurSupportsTen = blurConfig?.frameSupportedPixelFormats.contains { ($0 as NSNumber).uint32Value == format10 } ?? true
+        let useTenBit = settings.codec.wantsTenBit && frcSupportsTen && blurSupportsTen
+        let pixelFormat: OSType = useTenBit ? format10 : format8
+
+        let depthNote = settings.codec.wantsTenBit && !useTenBit ? " (10 бит недоступны, пишу в 8 бит)" : ""
+        progress(0, "Формат: \(settings.codec.title)\(depthNote)")
+
+        // MARK: Reader
+        let reader = try AVAssetReader(asset: asset)
+        let videoOut = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
+            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+            kCVPixelBufferMetalCompatibilityKey as String: true
+        ])
+        reader.add(videoOut)
+
+        var audioOut: AVAssetReaderTrackOutput?
+        if let audioTrack {
+            let o = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: nil)
+            reader.add(o)
+            audioOut = o
+        }
+
+        // MARK: Writer
+        try? FileManager.default.removeItem(at: output)
+        let writer = try AVAssetWriter(outputURL: output, fileType: .mov)
+
+        let colorProps = colorProperties(from: videoFormats.first)
+
+        func makeVideoSettings(color: [String: String]?) -> [String: Any] {
+            var s: [String: Any] = [
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height
+            ]
+            switch settings.codec {
+            case .hevc10, .hevc8:
+                let profile: String = useTenBit
+                    ? (kVTProfileLevel_HEVC_Main10_AutoLevel as String)
+                    : (kVTProfileLevel_HEVC_Main_AutoLevel as String)
+                s[AVVideoCodecKey] = AVVideoCodecType.hevc
+                s[AVVideoCompressionPropertiesKey] = [
+                    AVVideoAverageBitRateKey: Int(settings.bitrateMbps * 1_000_000),
+                    AVVideoExpectedSourceFrameRateKey: outputFPS,
+                    AVVideoMaxKeyFrameIntervalKey: outputFPS,
+                    AVVideoProfileLevelKey: profile
+                ] as [String: Any]
+            case .proRes422:
+                s[AVVideoCodecKey] = AVVideoCodecType(rawValue: "apcn")
+            case .proRes422HQ:
+                s[AVVideoCodecKey] = AVVideoCodecType(rawValue: "apch")
+            }
+            if let color { s[AVVideoColorPropertiesKey] = color }
+            return s
+        }
+
+        var videoSettings = makeVideoSettings(color: colorProps)
+        if !writer.canApply(outputSettings: videoSettings, forMediaType: .video) {
+            // возможно, не подошли цветовые метки — пробуем без них
+            videoSettings = makeVideoSettings(color: nil)
+            guard writer.canApply(outputSettings: videoSettings, forMediaType: .video) else {
+                throw RenderError.codecUnsupported(settings.codec.title)
+            }
+        }
+
+        let videoIn = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+        videoIn.expectsMediaDataInRealTime = false
+        videoIn.transform = writerTransform
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: videoIn,
+            sourcePixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
                 kCVPixelBufferWidthKey as String: width,
-                kCVPixelBufferHeightKey as String: height,
-                kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
-                kCVPixelBufferMetalCompatibilityKey as String: true
-            ] as CFDictionary,
-            &poolOut
+                kCVPixelBufferHeightKey as String: height
+            ]
         )
-        guard let pool = poolOut else { throw RenderError.frameCreationFailed }
+        writer.add(videoIn)
+
+        var audioIn: AVAssetWriterInput?
+        if audioOut != nil {
+            let a = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: audioFormat)
+            a.expectsMediaDataInRealTime = false
+            writer.add(a)
+            audioIn = a
+        }
+
+        // MARK: Пул буферов (с учётом требований обработчика)
+        func makePool(extra: [String: Any]?) -> CVPixelBufferPool? {
+            var attrs: [String: Any] = extra ?? [:]
+            attrs[kCVPixelBufferPixelFormatTypeKey as String] = pixelFormat
+            attrs[kCVPixelBufferWidthKey as String] = width
+            attrs[kCVPixelBufferHeightKey as String] = height
+            attrs[kCVPixelBufferIOSurfacePropertiesKey as String] = [String: Any]()
+            attrs[kCVPixelBufferMetalCompatibilityKey as String] = true
+            var out: CVPixelBufferPool?
+            CVPixelBufferPoolCreate(
+                nil,
+                [kCVPixelBufferPoolMinimumBufferCountKey as String: 4] as CFDictionary,
+                attrs as CFDictionary,
+                &out
+            )
+            return out
+        }
+        guard let pool = makePool(extra: config.destinationPixelBufferAttributes) ?? makePool(extra: nil) else {
+            throw RenderError.frameCreationFailed
+        }
 
         Breadcrumb.set("запуск обработчика")
         let processor = VTFrameProcessor()
@@ -420,7 +504,7 @@ enum FrameInterpolator {
         audioIn.markAsFinished()
     }
 
-    // MARK: - Поворот кадра на 90° по часовой (YCbCr 4:2:0, без потерь)
+    // MARK: - Поворот кадра на 90° по часовой (YCbCr 4:2:0, 8 и 10 бит, без потерь)
 
     private static func rotateClockwise90(_ src: CVPixelBuffer, into dst: CVPixelBuffer) throws {
         CVPixelBufferLockBaseAddress(src, .readOnly)
@@ -429,6 +513,11 @@ enum FrameInterpolator {
             CVPixelBufferUnlockBaseAddress(dst, [])
             CVPixelBufferUnlockBaseAddress(src, .readOnly)
         }
+
+        let tenBit = CVPixelBufferGetPixelFormatType(src) == format10
+        let direction = UInt8(kRotate90DegreesClockwise)
+        let flags = vImage_Flags(kvImageNoFlags)
+        let background4 = [UInt8](repeating: 0, count: 4)
 
         for plane in 0..<2 {
             guard
@@ -448,13 +537,18 @@ enum FrameInterpolator {
                 width: vImagePixelCount(CVPixelBufferGetWidthOfPlane(dst, plane)),
                 rowBytes: CVPixelBufferGetBytesPerRowOfPlane(dst, plane)
             )
-            let direction = UInt8(kRotate90DegreesClockwise)
-            let flags = vImage_Flags(kvImageNoFlags)
 
-            // plane 0 — яркость (8 бит), plane 1 — пары Cb/Cr (16 бит на пиксель)
-            let error = plane == 0
-                ? vImageRotate90_Planar8(&s, &d, direction, 0, flags)
-                : vImageRotate90_Planar16U(&s, &d, direction, 0, flags)
+            // Байт на «пиксель» плоскости: яркость 1 или 2, пары Cb/Cr — 2 или 4
+            let bytesPerPixel = (plane == 0 ? 1 : 2) * (tenBit ? 2 : 1)
+            let error: vImage_Error
+            switch bytesPerPixel {
+            case 1:
+                error = vImageRotate90_Planar8(&s, &d, direction, 0, flags)
+            case 2:
+                error = vImageRotate90_Planar16U(&s, &d, direction, 0, flags)
+            default:
+                error = vImageRotate90_ARGB8888(&s, &d, direction, background4, flags)
+            }
             guard error == kvImageNoError else { throw RenderError.frameCreationFailed }
         }
     }
@@ -471,8 +565,8 @@ enum FrameInterpolator {
         }
     }
 
-    /// Сохраняем цветовую схему исходника (в т.ч. HDR/HLG с iPhone),
-    /// но только для заведомо допустимых значений.
+    /// Цветовая схема исходника (в т.ч. HDR/HLG и Display P3).
+    /// Если AVAssetWriter не примет значения, в вызывающем коде пробуем без них.
     private static func colorProperties(from desc: CMFormatDescription?) -> [String: String]? {
         guard
             let desc,
@@ -482,12 +576,6 @@ enum FrameInterpolator {
             let matrix = ext[kCVImageBufferYCbCrMatrixKey as String] as? String
         else { return nil }
 
-        let okPrimaries: Set<String> = ["ITU_R_709_2", "ITU_R_2020", "P3_D65"]
-        let okTransfer: Set<String> = ["ITU_R_709_2", "ITU_R_2100_HLG", "SMPTE_ST_2084_PQ"]
-        let okMatrix: Set<String> = ["ITU_R_709_2", "ITU_R_2020", "ITU_R_601_4"]
-        guard okPrimaries.contains(primaries), okTransfer.contains(transfer), okMatrix.contains(matrix) else {
-            return nil
-        }
         return [
             AVVideoColorPrimariesKey: primaries,
             AVVideoTransferFunctionKey: transfer,
@@ -496,6 +584,7 @@ enum FrameInterpolator {
     }
 }
 
+// MARK: - Размытие движения
 
 /// Размытие движения для итоговой последовательности кадров (оригинальные + достроенные).
 /// Каждому кадру нужны соседи (предыдущий и следующий), поэтому работаем с задержкой в один кадр.
@@ -569,6 +658,7 @@ final class MotionBlurStage {
     }
 }
 
+// MARK: - Резкость
 
 /// Лёгкая резкость по яркости (Y) для достроенных кадров. Цвет не трогаем, оригинальные кадры не трогаем.
 final class LumaSharpener {
@@ -594,7 +684,10 @@ final class LumaSharpener {
         let h = CVPixelBufferGetHeightOfPlane(buffer, 0)
         let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
 
-        let needed = w * h
+        let is16 = CVPixelBufferGetPixelFormatType(buffer) == OSType(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+        let rowLen = w * (is16 ? 2 : 1)
+
+        let needed = rowLen * h
         if scratchSize < needed {
             scratch?.deallocate()
             scratch = UnsafeMutableRawPointer.allocate(byteCount: needed, alignment: 64)
@@ -603,18 +696,23 @@ final class LumaSharpener {
         guard let scratch else { throw RenderError.frameCreationFailed }
 
         var src = vImage_Buffer(data: base, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: rowBytes)
-        var dst = vImage_Buffer(data: scratch, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: w)
+        var dst = vImage_Buffer(data: scratch, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: rowLen)
 
         // Ядро 3×3: исходный пиксель + amount × (лапласиан). Сумма = 100, делитель = 100.
         let a = amount
         let kernel: [Int16] = [0, -a, 0, -a, 100 + 4 * a, -a, 0, -a, 0]
-        let error = kernel.withUnsafeBufferPointer { k in
-            vImageConvolve_Planar8(&src, &dst, nil, 0, 0, k.baseAddress!, 3, 3, 100, 0, vImage_Flags(kvImageEdgeExtend))
+        let flags = vImage_Flags(kvImageEdgeExtend)
+        let error: vImage_Error = kernel.withUnsafeBufferPointer { k in
+            if is16 {
+                return vImageConvolve_Planar16U(&src, &dst, nil, 0, 0, k.baseAddress!, 3, 3, 100, 0, flags)
+            } else {
+                return vImageConvolve_Planar8(&src, &dst, nil, 0, 0, k.baseAddress!, 3, 3, 100, 0, flags)
+            }
         }
         guard error == kvImageNoError else { throw RenderError.frameCreationFailed }
 
         for row in 0..<h {
-            memcpy(base + row * rowBytes, scratch + row * w, w)
+            memcpy(base + row * rowBytes, scratch + row * rowLen, rowLen)
         }
     }
 }
