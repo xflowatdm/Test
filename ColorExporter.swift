@@ -223,8 +223,8 @@ enum ColorExporter {
 
             let (params, match) = grade.get()
             let graded = ColorGrader.apply(to: CIImage(cvPixelBuffer: src), params: params, match: match)
-            context.render(graded, to: dst)
             CVBufferPropagateAttachments(src, dst)
+            context.render(graded, to: dst)
 
             try await FrameInterpolator.waitUntilReady(videoIn, writer: writer)
             if !adaptor.append(dst, withPresentationTime: pts) {

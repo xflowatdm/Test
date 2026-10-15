@@ -17,6 +17,9 @@ targets:
       - path: .
         includes:
           - "*.swift"
+      - path: Models
+        type: folder
+        optional: true
     info:
       path: Info.plist
       properties:

@@ -44,6 +44,9 @@ final class RenderViewModel: ObservableObject {
     @Published var motionBlur: Double = 0
     @Published var sharpness: Double = 0
     @Published var codec: VideoCodec = .hevc10
+    @Published var neuralEnabled = false
+    @Published var neuralModel: NeuralModel = NeuralModel.available.first ?? .general
+    @Published var neuralStrength: Double = 60
     @Published var resultPlayer: AVPlayer?
     @Published var bitrate: Double = 40
     @Published var state: RenderState = .idle
@@ -56,6 +59,8 @@ final class RenderViewModel: ObservableObject {
         // Если прошлый рендер оборвался вылетом, здесь будет последний этап
         previousCrash = Breadcrumb.last
     }
+
+    var neuralAvailable: Bool { !NeuralModel.available.isEmpty }
 
     var isRendering: Bool {
         if case .rendering = state { return true }
@@ -130,7 +135,8 @@ final class RenderViewModel: ObservableObject {
 
     func render() {
         guard let source = sourceURL, !isRendering else { return }
-        let settings = RenderSettings(bitrateMbps: bitrate, highQuality: smoothing, motionBlur: Int(motionBlur), sharpness: Int(sharpness), codec: codec)
+        let settings = RenderSettings(bitrateMbps: bitrate, highQuality: smoothing, motionBlur: Int(motionBlur), sharpness: Int(sharpness), codec: codec,
+            neural: neuralEnabled ? neuralModel : nil, neuralStrength: neuralStrength)
 
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let stamp = DateFormatter()

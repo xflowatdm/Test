@@ -55,6 +55,10 @@ struct RenderSettings {
     var sharpness: Int
     /// Кодек результата
     var codec: VideoCodec
+    /// Нейро-улучшение (nil — выключено)
+    var neural: NeuralModel?
+    /// Сила нейро-улучшения 0...100
+    var neuralStrength: Double
 }
 
 enum RenderError: LocalizedError {
@@ -64,6 +68,7 @@ enum RenderError: LocalizedError {
     case configurationFailed
     case frameCreationFailed
     case codecUnsupported(String)
+    case neural(String)
     case reader(String)
     case writer(String)
 
@@ -81,6 +86,8 @@ enum RenderError: LocalizedError {
             return "Не удалось подготовить кадр для обработки."
         case .codecUnsupported(let name):
             return "Этот iPhone не может записать видео в формате «\(name)». Выбери HEVC."
+        case .neural(let m):
+            return "Нейро-улучшение: \(m)"
         case .reader(let m):
             return "Ошибка чтения видео: \(m)"
         case .writer(let m):
@@ -297,6 +304,13 @@ enum FrameInterpolator {
             throw RenderError.frameCreationFailed
         }
 
+        var neuralVar: NeuralEnhancer?
+        if let neuralModel = settings.neural {
+            Breadcrumb.set("загрузка нейромодели")
+            neuralVar = try NeuralEnhancer(modelType: neuralModel, strength: settings.neuralStrength)
+        }
+        let neuralEnhancer = neuralVar
+
         Breadcrumb.set("запуск обработчика")
         let processor = VTFrameProcessor()
         try processor.startSession(configuration: config)
@@ -335,7 +349,7 @@ enum FrameInterpolator {
                 group.addTask {
                     try await processVideo(
                         videoOut: videoOut, videoIn: videoIn, adaptor: adaptor,
-                        writer: writer, processor: processor, pool: pool, rotate: rotate,
+                        writer: writer, processor: processor, pool: pool, rotate: rotate, enhancer: neuralEnhancer,
                         blurProcessor: blurProcessor, blurStrength: settings.motionBlur, sharpness: settings.sharpness,
                         totalFrames: totalFrames, progress: progress
                     )
@@ -445,6 +459,7 @@ enum FrameInterpolator {
         processor: VTFrameProcessor,
         pool: CVPixelBufferPool,
         rotate: Bool,
+        enhancer: NeuralEnhancer?,
         blurProcessor: VTFrameProcessor?,
         blurStrength: Int,
         sharpness: Int,
@@ -454,6 +469,7 @@ enum FrameInterpolator {
 
         var previous: (buffer: CVPixelBuffer, pts: CMTime)?
         var count = 0.0
+        let startedAt = Date()
 
         func nextSample() -> CMSampleBuffer? {
             autoreleasepool { videoOut.copyNextSampleBuffer() }
@@ -495,8 +511,11 @@ enum FrameInterpolator {
 
         while let sample = nextSample() {
             try Task.checkCancellation()
-            guard let rawBuffer = CMSampleBufferGetImageBuffer(sample) else { continue }
+            guard var rawBuffer = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            if let enhancer {
+                rawBuffer = try await enhancer.enhance(rawBuffer)
+            }
             let buffer = try prepare(rawBuffer)
 
             if let prev = previous {
@@ -537,9 +556,12 @@ enum FrameInterpolator {
 
             previous = (buffer, pts)
             count += 1
-            if Int(count) % 10 == 0 {
+            if enhancer != nil || Int(count) % 10 == 0 {
                 Breadcrumb.set("кадр \(Int(count)) из ~\(Int(totalFrames)), своб. память \(Breadcrumb.freeMemoryMB()) МБ")
-                progress(min(0.98, count / totalFrames), "Обработка кадров")
+                let elapsed = Date().timeIntervalSince(startedAt)
+                let remaining = elapsed / count * max(0, totalFrames - count)
+                let label = enhancer != nil ? "Нейро-обработка кадров" : "Обработка кадров"
+                progress(min(0.98, count / totalFrames), "\(label) · осталось \(formatDuration(remaining))")
             }
         }
 
@@ -553,6 +575,12 @@ enum FrameInterpolator {
         }
         videoIn.markAsFinished()
         Breadcrumb.set("видеодорожка завершена")
+    }
+
+    private static func formatDuration(_ seconds: Double) -> String {
+        if !seconds.isFinite || seconds < 0 { return "…" }
+        if seconds < 90 { return "\(Int(seconds)) с" }
+        return "\(Int(seconds / 60)) мин"
     }
 
     // MARK: - Аудио (без перекодирования)

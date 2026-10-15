@@ -143,6 +143,38 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
 
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(isOn: $vm.neuralEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Нейро-улучшение (экспериментально)")
+                        Text(vm.neuralAvailable
+                             ? "Убирает шум и артефакты сжатия, дорисовывает текстуры. Очень долго: время рендера вырастает в десятки раз, телефон греется."
+                             : "Нейромодель не попала в сборку. Нужны логи конвертации на GitHub (блок Annotations).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(!vm.neuralAvailable)
+
+                if vm.neuralEnabled && vm.neuralAvailable {
+                    HStack {
+                        Text("Модель")
+                        Spacer()
+                        Picker("Модель", selection: $vm.neuralModel) {
+                            ForEach(NeuralModel.available) { model in
+                                Text(model.title).tag(model)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                    Text(vm.neuralModel.details)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    GradeSlider(title: "Сила нейро-эффекта", value: $vm.neuralStrength,
+                                range: 10...100, neutral: 60, format: "%.0f")
+                }
+            }
+
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("Кодек")
