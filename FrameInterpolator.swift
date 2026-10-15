@@ -187,10 +187,12 @@ enum FrameInterpolator {
             blurConfig = c
         }
 
-        // 10 бит используем, только если его поддерживают все обработчики
-        let frcSupportsTen = config.frameSupportedPixelFormats.contains { ($0 as NSNumber).uint32Value == format10 }
-        let blurSupportsTen = blurConfig?.frameSupportedPixelFormats.contains { ($0 as NSNumber).uint32Value == format10 } ?? true
-        let useTenBit = settings.codec.wantsTenBit && frcSupportsTen && blurSupportsTen
+        // 10 бит используем, только если обработчики реально справились с пробным кадром
+        var useTenBit = false
+        if settings.codec.wantsTenBit {
+            Breadcrumb.set("проверка 10-битного режима")
+            useTenBit = await probeTenBit(config: config, blurConfig: blurConfig, width: width, height: height)
+        }
         let pixelFormat: OSType = useTenBit ? format10 : format8
 
         let depthNote = settings.codec.wantsTenBit && !useTenBit ? " (10 бит недоступны, пишу в 8 бит)" : ""
@@ -365,6 +367,72 @@ enum FrameInterpolator {
             try? FileManager.default.removeItem(at: output)
             throw error
         }
+    }
+
+    // MARK: - Проверка 10-битного режима
+
+    /// Прогоняет один пробный кадр через обработчики в 10 бит. Если что-то не поддерживается — вернёт false.
+    private static func probeTenBit(
+        config: VTFrameRateConversionConfiguration,
+        blurConfig: VTMotionBlurConfiguration?,
+        width: Int,
+        height: Int
+    ) async -> Bool {
+
+        func makeBuffer() -> CVPixelBuffer? {
+            var b: CVPixelBuffer?
+            CVPixelBufferCreate(
+                nil, width, height, format10,
+                [
+                    kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+                    kCVPixelBufferMetalCompatibilityKey as String: true
+                ] as CFDictionary,
+                &b
+            )
+            return b
+        }
+
+        guard
+            let b1 = makeBuffer(), let b2 = makeBuffer(), let b3 = makeBuffer(), let b4 = makeBuffer(),
+            let f1 = VTFrameProcessorFrame(buffer: b1, presentationTimeStamp: CMTime(value: 0, timescale: 600)),
+            let f2 = VTFrameProcessorFrame(buffer: b2, presentationTimeStamp: CMTime(value: 10, timescale: 600)),
+            let f3 = VTFrameProcessorFrame(buffer: b3, presentationTimeStamp: CMTime(value: 5, timescale: 600)),
+            let f4 = VTFrameProcessorFrame(buffer: b4, presentationTimeStamp: CMTime(value: 0, timescale: 600))
+        else { return false }
+
+        // интерполяция
+        let p = VTFrameProcessor()
+        do { try p.startSession(configuration: config) } catch { return false }
+        var ok = true
+        do {
+            guard let params = VTFrameRateConversionParameters(
+                sourceFrame: f1, nextFrame: f2, opticalFlow: nil,
+                interpolationPhase: [0.5], submissionMode: .random, destinationFrames: [f3]
+            ) else { throw RenderError.configurationFailed }
+            try await p.process(parameters: params)
+        } catch {
+            ok = false
+        }
+        p.endSession()
+        guard ok else { return false }
+
+        // размытие движения (если включено)
+        if let blurConfig {
+            let bp = VTFrameProcessor()
+            do { try bp.startSession(configuration: blurConfig) } catch { return false }
+            do {
+                guard let params = VTMotionBlurParameters(
+                    sourceFrame: f1, nextFrame: f2, previousFrame: nil,
+                    nextOpticalFlow: nil, previousOpticalFlow: nil,
+                    motionBlurStrength: 50, submissionMode: .random, destinationFrame: f4
+                ) else { throw RenderError.configurationFailed }
+                try await bp.process(parameters: params)
+            } catch {
+                ok = false
+            }
+            bp.endSession()
+        }
+        return ok
     }
 
     // MARK: - Видео
@@ -683,6 +751,7 @@ final class LumaSharpener {
         let w = CVPixelBufferGetWidthOfPlane(buffer, 0)
         let h = CVPixelBufferGetHeightOfPlane(buffer, 0)
         let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        guard w > 2, h > 2 else { return }
 
         let is16 = CVPixelBufferGetPixelFormatType(buffer) == OSType(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
         let rowLen = w * (is16 ? 2 : 1)
@@ -695,6 +764,16 @@ final class LumaSharpener {
         }
         guard let scratch else { throw RenderError.frameCreationFailed }
 
+        if is16 {
+            // 10 бит (значения лежат в 16-битных словах): копия плоскости и обычный цикл
+            for row in 0..<h {
+                memcpy(scratch + row * rowLen, base + row * rowBytes, rowLen)
+            }
+            sharpen16(base: base, rowBytes: rowBytes, scratch: scratch, rowLen: rowLen, w: w, h: h)
+            return
+        }
+
+        // 8 бит: свёртка 3×3 через Accelerate
         var src = vImage_Buffer(data: base, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: rowBytes)
         var dst = vImage_Buffer(data: scratch, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: rowLen)
 
@@ -703,16 +782,31 @@ final class LumaSharpener {
         let kernel: [Int16] = [0, -a, 0, -a, 100 + 4 * a, -a, 0, -a, 0]
         let flags = vImage_Flags(kvImageEdgeExtend)
         let error: vImage_Error = kernel.withUnsafeBufferPointer { k in
-            if is16 {
-                return vImageConvolve_Planar16U(&src, &dst, nil, 0, 0, k.baseAddress!, 3, 3, 100, 0, flags)
-            } else {
-                return vImageConvolve_Planar8(&src, &dst, nil, 0, 0, k.baseAddress!, 3, 3, 100, 0, flags)
-            }
+            vImageConvolve_Planar8(&src, &dst, nil, 0, 0, k.baseAddress!, 3, 3, 100, 0, flags)
         }
         guard error == kvImageNoError else { throw RenderError.frameCreationFailed }
 
         for row in 0..<h {
             memcpy(base + row * rowBytes, scratch + row * rowLen, rowLen)
+        }
+    }
+
+    private func sharpen16(
+        base: UnsafeMutableRawPointer, rowBytes: Int,
+        scratch: UnsafeMutableRawPointer, rowLen: Int,
+        w: Int, h: Int
+    ) {
+        let a = Int32(amount)
+        for y in 1..<(h - 1) {
+            let up = (scratch + (y - 1) * rowLen).assumingMemoryBound(to: UInt16.self)
+            let mid = (scratch + y * rowLen).assumingMemoryBound(to: UInt16.self)
+            let down = (scratch + (y + 1) * rowLen).assumingMemoryBound(to: UInt16.self)
+            let out = (base + y * rowBytes).assumingMemoryBound(to: UInt16.self)
+            for x in 1..<(w - 1) {
+                let c = Int32(mid[x])
+                let lap = 4 * c - Int32(up[x]) - Int32(down[x]) - Int32(mid[x - 1]) - Int32(mid[x + 1])
+                out[x] = UInt16(clamping: c + (a * lap) / 100)
+            }
         }
     }
 }
