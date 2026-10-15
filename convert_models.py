@@ -100,6 +100,20 @@ def convert(name, url, num_conv):
     os.remove(pth)
 
 
+def add_models_to_project():
+    """Подключает папку Models к проекту, только если модели действительно собрались."""
+    path = "project.yml"
+    text = open(path, encoding="utf-8").read()
+    if "path: Models" in text:
+        return
+    marker = '        includes:\n          - "*.swift"\n'
+    if marker not in text:
+        print("::warning::project.yml: не найдено место для папки Models")
+        return
+    text = text.replace(marker, marker + "      - path: Models\n        type: folder\n", 1)
+    open(path, "w", encoding="utf-8").write(text)
+
+
 def main():
     ok = []
     for name, url, num_conv in MODELS:
@@ -113,6 +127,7 @@ def main():
             print(f"::warning::Нейро-модель {name} не собралась: {message}")
     if not ok:
         sys.exit(1)
+    add_models_to_project()
 
 
 if __name__ == "__main__":
