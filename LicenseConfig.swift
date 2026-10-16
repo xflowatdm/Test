@@ -5,7 +5,7 @@
 
 enum LicenseConfig {
     /// Вставьте сюда публичный ключ (base64) между кавычками
-    static let publicKey = "jtuQa1LzDHNLRJxauQ4vVpLYcTxkpVxcqW4hlQThHDQ="
+    static let publicKey = "YugSh6W2LPHMgpfc1ZzCSY0xfELXl2MEanWJorCZKoo="
 
     /// ID отозванных ключей (список выводит действие revoke). Например: ["K7Q2XM", "A9B3CD"]
     static let revokedIDs: [String] = []
