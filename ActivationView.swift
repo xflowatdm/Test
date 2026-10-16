@@ -42,6 +42,7 @@ struct ActivationView: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(Theme.gradientEdge, lineWidth: 1)
             )
+            .gradientGlow(cornerRadius: 16, radius: 12, intensity: 0.5)
             VStack(alignment: .leading, spacing: 2) {
                 Text("SMOOTH FRAMES")
                     .font(.system(size: 20, weight: .heavy))

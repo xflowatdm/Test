@@ -23,6 +23,41 @@ struct SplitTone<Content: View>: View {
     }
 }
 
+// MARK: - Свечение (Deep Glow)
+
+/// Мягкое свечение позади элемента. Повторяет градиент: ярче у светлого края, у чёрного почти не видно.
+struct GradientGlow: ViewModifier {
+    var enabled: Bool
+    var cornerRadius: CGFloat
+    var radius: CGFloat
+    var intensity: Double
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Theme.gradient)
+                    .blur(radius: radius)
+                    .opacity(intensity)
+            )
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    func gradientGlow(
+        enabled: Bool = true,
+        cornerRadius: CGFloat = 14,
+        radius: CGFloat = 10,
+        intensity: Double = 0.5
+    ) -> some View {
+        modifier(GradientGlow(enabled: enabled, cornerRadius: cornerRadius, radius: radius, intensity: intensity))
+    }
+}
+
 // MARK: - Заголовок раздела
 
 struct SectionHeader: View {
@@ -77,11 +112,13 @@ struct PillTabs: View {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .stroke(selected ? Theme.gradientEdge : Theme.stroke, lineWidth: 1)
                         )
+                        .gradientGlow(enabled: selected, cornerRadius: 12, radius: 8, intensity: 0.45)
                     }
                     .buttonStyle(.plain)
                 }
             }
         }
+        .scrollClipDisabled()
     }
 }
 
@@ -128,6 +165,7 @@ struct SelectRow: View {
                         lineWidth: selected ? 1.5 : 1
                     )
             )
+            .gradientGlow(enabled: selected, cornerRadius: 14, radius: 8, intensity: 0.3)
         }
         .buttonStyle(.plain)
     }
@@ -179,6 +217,7 @@ struct ToggleRow: View {
                 .overlay(
                     Capsule().stroke(isOn ? Theme.gradientEdge : Color.clear, lineWidth: 1)
                 )
+                .gradientGlow(enabled: isOn, cornerRadius: 15, radius: 6, intensity: 0.6)
                 .animation(.easeOut(duration: 0.15), value: isOn)
             }
             .padding(14)
@@ -268,6 +307,7 @@ struct ChipRow: View {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .stroke(selected ? Theme.gradientEdge : Theme.stroke, lineWidth: 1)
                     )
+                    .gradientGlow(enabled: selected, cornerRadius: 10, radius: 6, intensity: 0.45)
                 }
                 .buttonStyle(.plain)
             }
@@ -309,6 +349,7 @@ struct PrimaryLabel: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(dark ? Theme.stroke : Theme.gradientEdge, lineWidth: 1)
         )
+        .gradientGlow(enabled: !dark, cornerRadius: 14, radius: 12, intensity: 0.5)
     }
 }
 
@@ -339,6 +380,7 @@ struct GradientProgress: View {
                 Capsule()
                     .fill(Theme.gradient)
                     .frame(width: max(8, geo.size.width * fraction))
+                    .gradientGlow(cornerRadius: 4, radius: 5, intensity: 0.7)
             }
         }
         .frame(height: 8)

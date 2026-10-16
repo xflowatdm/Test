@@ -103,6 +103,7 @@ struct BottomBar: View {
                     Capsule()
                         .fill(Theme.gradient)
                         .frame(width: 44, height: 3)
+                        .gradientGlow(cornerRadius: 1.5, radius: 5, intensity: 0.8)
                         .padding(.bottom, 4)
                 }
             }
