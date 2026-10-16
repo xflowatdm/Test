@@ -32,11 +32,16 @@ struct ActivationView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "play.rectangle.fill")
-                .font(.system(size: 24, weight: .bold))
-                .foregroundStyle(Color.white)
-                .frame(width: 52, height: 52)
-                .background(Theme.accent, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            SplitTone {
+                Image(systemName: "play.rectangle.fill")
+                    .font(.system(size: 24, weight: .bold))
+                    .frame(width: 52, height: 52)
+            }
+            .background(Theme.gradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Theme.gradientEdge, lineWidth: 1)
+            )
             VStack(alignment: .leading, spacing: 2) {
                 Text("SMOOTH FRAMES")
                     .font(.system(size: 20, weight: .heavy))

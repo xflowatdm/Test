@@ -9,7 +9,15 @@ enum Theme {
     static let selected = Color(red: 0.110, green: 0.149, blue: 0.180)
     static let stroke = Color.white.opacity(0.075)
 
-    static let accent = Color(red: 0.176, green: 0.620, blue: 0.408)
+    /// Запасной цвет для мелких значков. Основной цвет интерфейса — градиент ниже.
+    static let accent = Color.white
+
+    /// Основной цвет: градиент от чёрного к белому слева направо
+    static let gradient = LinearGradient(
+        colors: [Color(white: 0.04), Color(white: 1.0)],
+        startPoint: .leading,
+        endPoint: .trailing
+    )
 
     static let textPrimary = Color(red: 0.93, green: 0.95, blue: 0.97)
     static let textSecondary = Color(red: 0.53, green: 0.58, blue: 0.64)
@@ -17,6 +25,7 @@ enum Theme {
 
     static let trackOff = Color(red: 0.145, green: 0.180, blue: 0.212)
     static let knobOff = Color(red: 0.90, green: 0.92, blue: 0.94)
+    static let gradientEdge = Color.white.opacity(0.22)
 
     /// Фон экрана: почти чёрный сверху, к низу чуть светлее
     static var backdrop: some View {

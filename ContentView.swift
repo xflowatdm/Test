@@ -98,12 +98,12 @@ struct BottomBar: View {
                 selected ? Theme.selected : Color.clear,
                 in: RoundedRectangle(cornerRadius: 14, style: .continuous)
             )
-            .overlay(alignment: .leading) {
+            .overlay(alignment: .bottom) {
                 if selected {
                     Capsule()
-                        .fill(Theme.accent)
-                        .frame(width: 3, height: 26)
-                        .padding(.leading, 6)
+                        .fill(Theme.gradient)
+                        .frame(width: 44, height: 3)
+                        .padding(.bottom, 4)
                 }
             }
         }

@@ -207,7 +207,7 @@ struct ColorScreen: View {
 
             if color.isExporting {
                 VStack(alignment: .leading, spacing: 10) {
-                    ProgressView(value: color.progress).tint(Theme.accent)
+                    GradientProgress(value: color.progress)
                     Text("\(color.stage) · \(Int(color.progress * 100))% — не блокируй экран и не сворачивай приложение")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.textSecondary)

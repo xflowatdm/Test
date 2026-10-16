@@ -71,7 +71,7 @@ struct RenderScreen: View {
 
             if render.isLoading {
                 HStack(spacing: 10) {
-                    ProgressView().tint(Theme.accent)
+                    ProgressView().tint(Color.white)
                     Text("Загружаю видео…").foregroundStyle(Theme.textSecondary)
                 }
             }
@@ -325,7 +325,7 @@ struct RenderScreen: View {
     private var action: some View {
         if case .rendering(let value) = render.state {
             VStack(alignment: .leading, spacing: 10) {
-                ProgressView(value: value).tint(Theme.accent)
+                GradientProgress(value: value)
                 Text("\(render.stageText) · \(Int(value * 100))% — не блокируй экран и не сворачивай приложение")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textSecondary)
