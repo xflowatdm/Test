@@ -48,6 +48,8 @@ final class RenderViewModel: ObservableObject {
     @Published var neuralModel: NeuralModel = NeuralModel.available.first ?? .general
     @Published var neuralStrength: Double = 60
     @Published var applyColor = false
+    @Published var smartPacing = true
+    @Published var targetFPS = 120
     @Published var colorReady = false
     @Published var resultPlayer: AVPlayer?
     @Published var bitrate: Double = 40
@@ -145,7 +147,7 @@ final class RenderViewModel: ObservableObject {
         let gradeSnapshot: GradeSnapshot? = (applyColor && GradeStore.isConfigured) ? GradeStore.snapshot() : nil
         let settings = RenderSettings(bitrateMbps: bitrate, highQuality: smoothing, motionBlur: Int(motionBlur), sharpness: Int(sharpness), codec: codec,
             neural: neuralEnabled ? neuralModel : nil, neuralStrength: neuralStrength,
-            grade: gradeSnapshot)
+            grade: gradeSnapshot, retimeFPS: smartPacing ? targetFPS : nil)
 
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let stamp = DateFormatter()

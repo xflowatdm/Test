@@ -57,6 +57,21 @@ final class ColorViewModel: ObservableObject {
         }
     }
 
+    /// Видео выбирается один раз в разделе «Видео» и приходит сюда готовым файлом
+    func setSource(_ url: URL?) async {
+        guard let url else { return }
+        errorMessage = nil
+        resultMessage = nil
+        resultURL = nil
+        sourceURL = url
+        buildPlayer(for: url)
+
+        matchStatus = "Анализирую кадры видео…"
+        sourceHistogram = await ColorMatcher.histogram(from: AVURLAsset(url: url))
+        matchStatus = ""
+        recomputeMatch()
+    }
+
     private func buildPlayer(for url: URL) {
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)

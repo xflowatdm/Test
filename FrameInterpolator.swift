@@ -61,6 +61,8 @@ struct RenderSettings {
     var neuralStrength: Double
     /// Цветокоррекция из вкладки «Цвет» (nil — выключено)
     var grade: GradeSnapshot?
+    /// Умный темп: итоговая частота кадров на ровной сетке (nil — обычное ×2)
+    var retimeFPS: Int?
 }
 
 enum RenderError: LocalizedError {
@@ -163,7 +165,7 @@ enum FrameInterpolator {
         let audioFormat = try await audioTrack?.load(.formatDescriptions).first
 
         let sourceFPS = nominalFPS > 0 ? Double(nominalFPS) : 60
-        let outputFPS = Int((sourceFPS * 2).rounded())
+        let outputFPS = settings.retimeFPS ?? Int((sourceFPS * 2).rounded())
         let totalFrames = max(1, duration.seconds * sourceFPS)
 
         // MARK: Настройки обработчиков
@@ -353,7 +355,7 @@ enum FrameInterpolator {
                     try await processVideo(
                         videoOut: videoOut, videoIn: videoIn, adaptor: adaptor,
                         writer: writer, processor: processor, pool: pool, rotate: rotate, enhancer: neuralEnhancer, gradeStage: gradeStage,
-                        blurProcessor: blurProcessor, blurStrength: settings.motionBlur, sharpness: settings.sharpness,
+                        blurProcessor: blurProcessor, blurStrength: settings.motionBlur, sharpness: settings.sharpness, retimeFPS: settings.retimeFPS,
                         totalFrames: totalFrames, progress: progress
                     )
                 }
@@ -467,6 +469,7 @@ enum FrameInterpolator {
         blurProcessor: VTFrameProcessor?,
         blurStrength: Int,
         sharpness: Int,
+        retimeFPS: Int?,
         totalFrames: Double,
         progress: ProgressHandler
     ) async throws {
@@ -513,10 +516,125 @@ enum FrameInterpolator {
             return dst
         }
 
+        // --- Умный темп: ровная сетка кадров, дубликаты пропускаем ---
+        let fpsOut = Int32(retimeFPS ?? 0)
+        var anchor: (buffer: CVPixelBuffer, pts: CMTime)?
+        var firstPTS = CMTime.zero
+        var nextTick = 0
+        var lastSignature: [UInt8]?
+        var lastSourcePTS = CMTime.zero
+        var lastNextPTS: CMTime?
+        let maxGap = 0.12
+
+        func tickTime(_ k: Int) -> CMTime {
+            CMTimeAdd(firstPTS, CMTime(value: Int64(k), timescale: fpsOut))
+        }
+
+        func makeParams(
+            src: VTFrameProcessorFrame, next: VTFrameProcessorFrame,
+            phases: [Float], dsts: [VTFrameProcessorFrame], sequential: Bool
+        ) -> VTFrameRateConversionParameters? {
+            if sequential {
+                return VTFrameRateConversionParameters(
+                    sourceFrame: src, nextFrame: next, opticalFlow: nil,
+                    interpolationPhase: phases, submissionMode: .sequential, destinationFrames: dsts
+                )
+            }
+            return VTFrameRateConversionParameters(
+                sourceFrame: src, nextFrame: next, opticalFlow: nil,
+                interpolationPhase: phases, submissionMode: .random, destinationFrames: dsts
+            )
+        }
+
+        /// Принимает очередной уникальный кадр и выдаёт все кадры сетки между предыдущим уникальным и этим
+        func advance(to nextBuffer: CVPixelBuffer, at nextPTS: CMTime) async throws {
+            guard let a = anchor else {
+                anchor = (nextBuffer, nextPTS)
+                firstPTS = nextPTS
+                nextTick = 0
+                return
+            }
+            let tA = a.pts.seconds
+            let tB = nextPTS.seconds
+            let span = tB - tA
+            guard span > 0 else {
+                anchor = (nextBuffer, nextPTS)
+                return
+            }
+
+            var originals: [CMTime] = []
+            var phases: [Float] = []
+            var phasePTS: [CMTime] = []
+            while true {
+                let t = tickTime(nextTick)
+                if t.seconds >= tB - 1e-6 { break }
+                let phase = (t.seconds - tA) / span
+                // длинная пауза между кадрами (стоп-кадр, загрузка): не морфим, держим кадр
+                if phase < 0.02 || span > maxGap {
+                    originals.append(t)
+                } else {
+                    phases.append(Float(phase))
+                    phasePTS.append(t)
+                }
+                nextTick += 1
+            }
+
+            for t in originals {
+                try await emit(a.buffer, t)
+            }
+
+            if !phases.isEmpty {
+                var dstBuffers: [CVPixelBuffer] = []
+                var dstFrames: [VTFrameProcessorFrame] = []
+                for t in phasePTS {
+                    var out: CVPixelBuffer?
+                    CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)
+                    guard
+                        let b = out,
+                        let f = VTFrameProcessorFrame(buffer: b, presentationTimeStamp: t)
+                    else { throw RenderError.frameCreationFailed }
+                    CVBufferPropagateAttachments(a.buffer, b)
+                    dstBuffers.append(b)
+                    dstFrames.append(f)
+                }
+                guard
+                    let srcFrame = VTFrameProcessorFrame(buffer: a.buffer, presentationTimeStamp: a.pts),
+                    let nextFrame = VTFrameProcessorFrame(buffer: nextBuffer, presentationTimeStamp: nextPTS)
+                else { throw RenderError.frameCreationFailed }
+
+                let sequential = lastNextPTS.map { CMTimeCompare($0, a.pts) == 0 } ?? false
+                guard let params = makeParams(
+                    src: srcFrame, next: nextFrame, phases: phases, dsts: dstFrames, sequential: sequential
+                ) else { throw RenderError.frameCreationFailed }
+
+                try await processor.process(parameters: params)
+                lastNextPTS = nextPTS
+
+                for (i, b) in dstBuffers.enumerated() {
+                    if let sharpener { try sharpener.apply(to: b) }
+                    try await emit(b, phasePTS[i])
+                }
+            }
+
+            anchor = (nextBuffer, nextPTS)
+        }
+
         while let sample = nextSample() {
             try Task.checkCancellation()
             guard var rawBuffer = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+
+            // Умный темп: повторяющиеся кадры пропускаем ещё до тяжёлой обработки
+            if retimeFPS != nil {
+                lastSourcePTS = pts
+                let signature = FrameSignature.make(rawBuffer)
+                if let last = lastSignature, FrameSignature.changedCount(signature, last) <= 8 {
+                    count += 1
+                    continue
+                }
+                lastSignature = signature
+            }
+
             if let enhancer {
                 rawBuffer = try await enhancer.enhance(rawBuffer)
             }
@@ -525,7 +643,9 @@ enum FrameInterpolator {
             }
             let buffer = try prepare(rawBuffer)
 
-            if let prev = previous {
+            if retimeFPS != nil {
+                try await advance(to: buffer, at: pts)
+            } else if let prev = previous {
                 // 1) исходный кадр
                 try await emit(prev.buffer, prev.pts)
 
@@ -574,8 +694,16 @@ enum FrameInterpolator {
 
         // последний кадр
         Breadcrumb.set("запись последнего кадра, своб. память \(Breadcrumb.freeMemoryMB()) МБ")
-        if let last = previous {
+        if retimeFPS == nil, let last = previous {
             try await emit(last.buffer, last.pts)
+        }
+        if retimeFPS != nil, let a = anchor {
+            // последний уникальный кадр держим до конца исходного видео
+            let end = lastSourcePTS.seconds
+            repeat {
+                try await emit(a.buffer, tickTime(nextTick))
+                nextTick += 1
+            } while tickTime(nextTick).seconds <= end + 1e-6
         }
         if let stage = blurStage, let out = try await stage.flush() {
             try await append(out.buffer, out.pts)
@@ -843,5 +971,51 @@ final class LumaSharpener {
                 out[x] = UInt16(clamping: c + (a * lap) / 100)
             }
         }
+    }
+}
+
+
+// MARK: - Поиск повторяющихся кадров
+
+/// Лёгкая «подпись» кадра: яркость в сетке 128×128 точек. Нужна, чтобы отличать повторы от новых кадров.
+enum FrameSignature {
+    private static let grid = 128
+
+    static func make(_ buffer: CVPixelBuffer) -> [UInt8] {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return [] }
+
+        let w = CVPixelBufferGetWidthOfPlane(buffer, 0)
+        let h = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        let is16 = CVPixelBufferGetPixelFormatType(buffer) == OSType(kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
+
+        var out = [UInt8]()
+        out.reserveCapacity(grid * grid)
+        for gy in 0..<grid {
+            let y = min(h - 1, gy * h / grid + h / (2 * grid))
+            let row = base + y * rowBytes
+            for gx in 0..<grid {
+                let x = min(w - 1, gx * w / grid + w / (2 * grid))
+                if is16 {
+                    let v = row.assumingMemoryBound(to: UInt16.self)[x]
+                    out.append(UInt8(v >> 8))
+                } else {
+                    out.append(row.assumingMemoryBound(to: UInt8.self)[x])
+                }
+            }
+        }
+        return out
+    }
+
+    /// Сколько точек заметно отличаются (шум сжатия не считается)
+    static func changedCount(_ a: [UInt8], _ b: [UInt8], threshold: Int = 6) -> Int {
+        guard a.count == b.count, !a.isEmpty else { return Int.max }
+        var count = 0
+        for i in 0..<a.count where abs(Int(a[i]) - Int(b[i])) > threshold {
+            count += 1
+        }
+        return count
     }
 }
