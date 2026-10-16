@@ -6,6 +6,7 @@ import AVKit
 
 struct RenderScreen: View {
     @ObservedObject var render: RenderViewModel
+    @ObservedObject var license: LicenseManager
     @State private var tab = 0
     @State private var pickerItem: PhotosPickerItem?
 
@@ -89,6 +90,27 @@ struct RenderScreen: View {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 13))
                     .foregroundStyle(.red)
+            }
+
+            licenseCard
+        }
+    }
+
+    private var licenseCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SmallCaption(text: "Лицензия")
+            VStack(spacing: 0) {
+                InfoRow(label: "Статус", value: license.statusText)
+                if case .active(let p) = license.state {
+                    InfoRow(label: "Ключ", value: p.id)
+                }
+                InfoRow(label: "Код устройства", value: license.deviceCode, divider: false)
+            }
+            .themedCard()
+
+            if case .active = license.state {
+                PrimaryButton(title: "Сменить ключ", icon: "key.fill", dark: true) { license.deactivate() }
+                    .disabled(render.isRendering)
             }
         }
     }

@@ -5,13 +5,29 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var render = RenderViewModel()
     @StateObject private var color = ColorViewModel()
+    @StateObject private var license = LicenseManager()
+    @Environment(\.scenePhase) private var scenePhase
     @State private var tab = 0
 
     var body: some View {
+        Group {
+            if license.isUnlocked {
+                mainContent
+            } else {
+                ActivationView(license: license)
+            }
+        }
+        .preferredColorScheme(.dark)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { license.refresh() }
+        }
+    }
+
+    private var mainContent: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
             if tab == 0 {
-                RenderScreen(render: render)
+                RenderScreen(render: render, license: license)
             } else {
                 ColorScreen(color: color, render: render) { tab = 0 }
             }
@@ -19,7 +35,6 @@ struct ContentView: View {
         .safeAreaInset(edge: .bottom) {
             BottomBar(selection: $tab)
         }
-        .preferredColorScheme(.dark)
         .onChange(of: render.sourceURL) { _, url in
             Task { await color.setSource(url) }
         }
