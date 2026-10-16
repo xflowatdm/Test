@@ -52,7 +52,7 @@ struct ColorScreen: View {
                     .aspectRatio(16.0 / 9.0, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
-            ToggleRow(title: "Показать оригинал", isOn: $color.showOriginal)
+            ToggleRow(title: "Показать оригинал", icon: "eye", isOn: $color.showOriginal)
         }
     }
 
@@ -129,7 +129,7 @@ struct ColorScreen: View {
             ToggleRow(
                 title: "Применять в рендере",
                 caption: "Включает этот цвет на вкладке «Рендер» (один проход вместе с интерполяцией).",
-                isOn: $render.applyColor
+                icon: "play.rectangle", isOn: $render.applyColor
             )
         }
     }
@@ -207,7 +207,7 @@ struct ColorScreen: View {
 
             if color.isExporting {
                 VStack(alignment: .leading, spacing: 10) {
-                    ProgressView(value: color.progress).tint(.white)
+                    ProgressView(value: color.progress).tint(Theme.accent)
                     Text("\(color.stage) · \(Int(color.progress * 100))% — не блокируй экран и не сворачивай приложение")
                         .font(.system(size: 12))
                         .foregroundStyle(Theme.textSecondary)

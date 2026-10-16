@@ -8,7 +8,7 @@ struct ActivationView: View {
 
     var body: some View {
         ZStack {
-            Theme.background.ignoresSafeArea()
+            Theme.backdrop.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     header
@@ -34,9 +34,9 @@ struct ActivationView: View {
         HStack(spacing: 12) {
             Image(systemName: "play.rectangle.fill")
                 .font(.system(size: 24, weight: .bold))
-                .foregroundStyle(Color.black)
+                .foregroundStyle(Color.white)
                 .frame(width: 52, height: 52)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(Theme.accent, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 Text("SMOOTH FRAMES")
                     .font(.system(size: 20, weight: .heavy))

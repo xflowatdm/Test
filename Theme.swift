@@ -1,19 +1,40 @@
 import SwiftUI
 
-/// Тёмная палитра: почти чёрный фон, графитовые панели, белое выделение
+/// Тёмно-синяя палитра с зелёным акцентом
 enum Theme {
-    static let background = Color(red: 0.055, green: 0.055, blue: 0.062)
-    static let panel = Color(red: 0.098, green: 0.098, blue: 0.106)
-    static let card = Color(red: 0.082, green: 0.082, blue: 0.090)
-    static let row = Color(red: 0.135, green: 0.135, blue: 0.147)
-    static let stroke = Color.white.opacity(0.07)
-    static let textSecondary = Color(white: 0.58)
-    static let textTertiary = Color(white: 0.42)
+    static let background = Color(red: 0.035, green: 0.051, blue: 0.067)
+    static let panel = Color(red: 0.055, green: 0.078, blue: 0.098)
+    static let card = Color(red: 0.063, green: 0.090, blue: 0.110)
+    static let row = Color(red: 0.086, green: 0.118, blue: 0.141)
+    static let selected = Color(red: 0.110, green: 0.149, blue: 0.180)
+    static let stroke = Color.white.opacity(0.075)
+
+    static let accent = Color(red: 0.176, green: 0.620, blue: 0.408)
+
+    static let textPrimary = Color(red: 0.93, green: 0.95, blue: 0.97)
+    static let textSecondary = Color(red: 0.53, green: 0.58, blue: 0.64)
+    static let textTertiary = Color(red: 0.38, green: 0.43, blue: 0.48)
+
+    static let trackOff = Color(red: 0.145, green: 0.180, blue: 0.212)
+    static let knobOff = Color(red: 0.90, green: 0.92, blue: 0.94)
+
+    /// Фон экрана: почти чёрный сверху, к низу чуть светлее
+    static var backdrop: some View {
+        LinearGradient(
+            stops: [
+                .init(color: Color(red: 0.035, green: 0.051, blue: 0.067), location: 0.0),
+                .init(color: Color(red: 0.050, green: 0.071, blue: 0.090), location: 0.55),
+                .init(color: Color(red: 0.140, green: 0.165, blue: 0.195), location: 1.0)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
 }
 
 extension View {
-    /// Тёмная карточка со скруглением
-    func themedCard(radius: CGFloat = 18) -> some View {
+    /// Тёмная карточка с тонкой рамкой
+    func themedCard(radius: CGFloat = 16) -> some View {
         self
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -71,7 +71,7 @@ struct RenderScreen: View {
 
             if render.isLoading {
                 HStack(spacing: 10) {
-                    ProgressView().tint(.white)
+                    ProgressView().tint(Theme.accent)
                     Text("Загружаю видео…").foregroundStyle(Theme.textSecondary)
                 }
             }
@@ -123,7 +123,7 @@ struct RenderScreen: View {
             ToggleRow(
                 title: "Умный темп кадров",
                 caption: "В записях игр кадры часто приходят неровно или повторяются. Приложение пропускает повторы и достраивает кадры на ровной сетке, движение становится плавнее. Рекомендуется.",
-                isOn: $render.smartPacing
+                icon: "speedometer", isOn: $render.smartPacing
             )
             if render.smartPacing {
                 ForEach([60, 90, 120], id: \.self) { fps in
@@ -145,7 +145,7 @@ struct RenderScreen: View {
             ToggleRow(
                 title: "Сглаживание (экспериментально)",
                 caption: "Режим повышенного качества расчёта движения. На резких поворотах камеры может рвать картинку, тогда выключи.",
-                isOn: $render.smoothing
+                icon: "wand.and.stars", isOn: $render.smoothing
             )
 
             SmallCaption(text: "Размытие движения")
@@ -182,7 +182,7 @@ struct RenderScreen: View {
                 caption: render.neuralAvailable
                     ? "Убирает шум и артефакты сжатия, дорисовывает текстуры. Очень долго: рендер растёт в десятки раз, телефон греется."
                     : "Нейромодель не попала в сборку. Нужны логи конвертации на GitHub (блок Annotations).",
-                isOn: $render.neuralEnabled,
+                icon: "cpu", isOn: $render.neuralEnabled,
                 disabled: !render.neuralAvailable
             )
             if render.neuralEnabled && render.neuralAvailable {
@@ -285,7 +285,7 @@ struct RenderScreen: View {
                     caption: render.colorReady
                         ? "Цвет, чёткость и текстуры из вкладки «Цвет» применятся в том же проходе, без лишнего пережатия."
                         : "Сначала настройте цвет на вкладке «Цвет» (например, пресет «HDR-игра»).",
-                    isOn: $render.applyColor,
+                    icon: "paintpalette", isOn: $render.applyColor,
                     disabled: !render.colorReady
                 )
 
@@ -325,7 +325,7 @@ struct RenderScreen: View {
     private var action: some View {
         if case .rendering(let value) = render.state {
             VStack(alignment: .leading, spacing: 10) {
-                ProgressView(value: value).tint(.white)
+                ProgressView(value: value).tint(Theme.accent)
                 Text("\(render.stageText) · \(Int(value * 100))% — не блокируй экран и не сворачивай приложение")
                     .font(.system(size: 12))
                     .foregroundStyle(Theme.textSecondary)

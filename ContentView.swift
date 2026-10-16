@@ -38,7 +38,7 @@ struct ContentView: View {
 
     private var mainContent: some View {
         ZStack {
-            Theme.background.ignoresSafeArea()
+            Theme.backdrop.ignoresSafeArea()
             if tab == 0 {
                 RenderScreen(render: render, license: license)
             } else {
@@ -71,9 +71,9 @@ struct BottomBar: View {
             item(1, title: "Цвет", icon: "paintpalette.fill")
         }
         .padding(6)
-        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .background(Theme.panel, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(Theme.stroke, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(Theme.stroke, lineWidth: 1)
         )
         .padding(.horizontal, 16)
         .padding(.top, 6)
@@ -87,17 +87,25 @@ struct BottomBar: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: icon)
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 16, weight: .semibold))
                 Text(title)
                     .font(.system(size: 16, weight: .semibold))
             }
-            .foregroundStyle(selected ? Color.black : Theme.textSecondary)
+            .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
             .frame(maxWidth: .infinity)
             .frame(height: 48)
             .background(
-                selected ? Color.white : Color.clear,
-                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+                selected ? Theme.selected : Color.clear,
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
             )
+            .overlay(alignment: .leading) {
+                if selected {
+                    Capsule()
+                        .fill(Theme.accent)
+                        .frame(width: 3, height: 26)
+                        .padding(.leading, 6)
+                }
+            }
         }
         .buttonStyle(.plain)
     }

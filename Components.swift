@@ -9,16 +9,17 @@ struct SectionHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title.uppercased())
-                .font(.system(size: 22, weight: .heavy))
-                .foregroundStyle(.white)
+                .font(.system(size: 20, weight: .bold))
+                .tracking(0.6)
+                .foregroundStyle(Theme.textPrimary)
             Text(subtitle)
-                .font(.system(size: 14))
+                .font(.system(size: 13))
                 .foregroundStyle(Theme.textSecondary)
         }
     }
 }
 
-// MARK: - Вкладки-«пилюли» (белая — активная)
+// MARK: - Вкладки-«пилюли» (зелёная — активная)
 
 struct PillTabs: View {
     let titles: [String]
@@ -33,12 +34,16 @@ struct PillTabs: View {
                     } label: {
                         Text(titles[i])
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(selection == i ? Color.black : Theme.textSecondary)
+                            .foregroundStyle(selection == i ? Color.white : Theme.textSecondary)
                             .padding(.horizontal, 18)
-                            .frame(height: 42)
+                            .frame(height: 40)
                             .background(
-                                selection == i ? Color.white : Theme.row,
-                                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                selection == i ? Theme.accent : Theme.row,
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(selection == i ? Color.clear : Theme.stroke, lineWidth: 1)
                             )
                     }
                     .buttonStyle(.plain)
@@ -48,7 +53,7 @@ struct PillTabs: View {
     }
 }
 
-// MARK: - Строка выбора (белая — выбранная, с точкой справа)
+// MARK: - Строка выбора (выбранная — с зелёной рамкой и галочкой)
 
 struct SelectRow: View {
     let title: String
@@ -62,36 +67,43 @@ struct SelectRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(selected ? Color.black : Color.white)
+                        .foregroundStyle(Theme.textPrimary)
                     if let subtitle {
                         Text(subtitle)
                             .font(.system(size: 12))
-                            .foregroundStyle(selected ? Color.black.opacity(0.6) : Theme.textSecondary)
+                            .foregroundStyle(Theme.textSecondary)
                             .multilineTextAlignment(.leading)
                     }
                 }
                 Spacer(minLength: 8)
                 if selected {
-                    Circle().fill(Color.black).frame(width: 8, height: 8)
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(Theme.accent)
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                selected ? Color.white : Theme.row,
-                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                selected ? Theme.selected : Theme.row,
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(selected ? Theme.accent : Theme.stroke, lineWidth: selected ? 1.5 : 1)
             )
         }
         .buttonStyle(.plain)
     }
 }
 
-// MARK: - Переключатель в строке
+// MARK: - Карточка с переключателем (иконка, заголовок, подпись)
 
 struct ToggleRow: View {
     let title: String
     var caption: String? = nil
+    var icon: String? = nil
     @Binding var isOn: Bool
     var disabled: Bool = false
 
@@ -100,10 +112,18 @@ struct ToggleRow: View {
             isOn.toggle()
         } label: {
             HStack(spacing: 12) {
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(Theme.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1.5))
+                }
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
+                    Text(title.uppercased())
+                        .font(.system(size: 14, weight: .bold))
+                        .tracking(0.4)
+                        .foregroundStyle(Theme.textPrimary)
                         .multilineTextAlignment(.leading)
                     if let caption {
                         Text(caption)
@@ -114,12 +134,12 @@ struct ToggleRow: View {
                 }
                 Spacer(minLength: 8)
                 ZStack(alignment: isOn ? .trailing : .leading) {
-                    Capsule().fill(isOn ? Color.white : Theme.row)
+                    Capsule().fill(isOn ? Theme.accent : Theme.trackOff)
                     Circle()
-                        .fill(isOn ? Color.black : Color(white: 0.5))
+                        .fill(isOn ? Color.white : Theme.knobOff)
                         .padding(3)
                 }
-                .frame(width: 52, height: 30)
+                .frame(width: 50, height: 30)
                 .animation(.easeOut(duration: 0.15), value: isOn)
             }
             .padding(14)
@@ -151,25 +171,22 @@ struct GradeSlider: View {
         VStack(spacing: 6) {
             HStack {
                 Text(title)
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Theme.textPrimary)
                 Spacer()
                 Button {
                     value = neutral
                 } label: {
                     Text(String(format: format, value))
-                        .font(.system(size: 13, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(isNeutral ? Theme.textSecondary : Color.black)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(isNeutral ? Theme.row : Color.white, in: Capsule())
+                        .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(isNeutral ? Theme.textSecondary : Theme.accent)
                 }
                 .buttonStyle(.plain)
             }
             if let step {
-                Slider(value: $value, in: range, step: step).tint(Color.white)
+                Slider(value: $value, in: range, step: step).tint(Color(white: 0.78))
             } else {
-                Slider(value: $value, in: range).tint(Color.white)
+                Slider(value: $value, in: range).tint(Color(white: 0.78))
             }
         }
     }
@@ -191,12 +208,16 @@ struct ChipRow: View {
                 } label: {
                     Text(label(v))
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(current == v ? Color.black : Theme.textSecondary)
+                        .foregroundStyle(current == v ? Color.white : Theme.textSecondary)
                         .padding(.horizontal, 14)
                         .frame(height: 34)
                         .background(
-                            current == v ? Color.white : Theme.row,
-                            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            current == v ? Theme.accent : Theme.row,
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(current == v ? Color.clear : Theme.stroke, lineWidth: 1)
                         )
                 }
                 .buttonStyle(.plain)
@@ -218,11 +239,15 @@ struct PrimaryLabel: View {
             if let icon { Image(systemName: icon) }
             Text(title)
         }
-        .font(.system(size: 17, weight: .bold))
-        .foregroundStyle(dark ? Color.white : Color.black)
+        .font(.system(size: 16, weight: .bold))
+        .foregroundStyle(Color.white)
         .frame(maxWidth: .infinity)
-        .frame(height: 54)
-        .background(dark ? Theme.row : Color.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .frame(height: 52)
+        .background(dark ? Theme.row : Theme.accent, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(dark ? Theme.stroke : Color.clear, lineWidth: 1)
+        )
     }
 }
 
@@ -253,7 +278,7 @@ struct InfoRow: View {
                 Text(label).foregroundStyle(Theme.textSecondary)
                 Spacer(minLength: 12)
                 Text(value)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Theme.textPrimary)
                     .fontWeight(.semibold)
                     .multilineTextAlignment(.trailing)
             }
@@ -272,6 +297,7 @@ struct SmallCaption: View {
     var body: some View {
         Text(text.uppercased())
             .font(.system(size: 12, weight: .semibold))
+            .tracking(0.8)
             .foregroundStyle(Theme.textSecondary)
             .padding(.top, 4)
     }
