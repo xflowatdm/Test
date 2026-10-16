@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // MARK: - Корневой экран: две вкладки снизу
 
@@ -8,6 +9,8 @@ struct ContentView: View {
     @StateObject private var license = LicenseManager()
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab = 0
+    /// Проверка срока ключа раз в 30 секунд, пока приложение открыто
+    private let ticker = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Group {
@@ -20,6 +23,16 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { license.refresh() }
+        }
+        .onReceive(ticker) { _ in
+            license.refresh()
+        }
+        .onChange(of: license.isUnlocked) { _, unlocked in
+            // срок истёк: останавливаем всё, что запущено
+            if !unlocked {
+                render.cancel()
+                color.cancel()
+            }
         }
     }
 

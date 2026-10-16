@@ -32,7 +32,7 @@ enum LicenseError: LocalizedError {
         case .notConfigured: return "Лицензирование не настроено."
         case .format: return "Ключ введён неверно. Скопируйте его целиком."
         case .signature: return "Ключ недействителен."
-        case .wrongDevice: return "Ключ выдан для другого устройства."
+        case .wrongDevice: return "Ключ выдан для другого кода устройства. Если приложение переустанавливали или переподписывали, код мог измениться: отправьте продавцу новый код."
         case .expired: return "Срок действия ключа истёк."
         case .revoked: return "Ключ отозван."
         case .clockTampered: return "Системное время изменено. Верните правильную дату и время."
@@ -190,20 +190,24 @@ final class LicenseManager: ObservableObject {
 
     func refresh() {
         guard Licensing.isConfigured else {
-            state = .devMode
+            setState(.devMode)
             return
         }
         guard let key = SecureStore.get("key") else {
-            state = .locked
+            setState(.locked)
             return
         }
         do {
-            state = .active(try Licensing.verify(key))
-            message = nil
+            setState(.active(try Licensing.verify(key)))
+            if message != nil { message = nil }
         } catch {
-            state = .locked
+            setState(.locked)
             message = error.localizedDescription
         }
+    }
+
+    private func setState(_ new: State) {
+        if state != new { state = new }
     }
 
     @discardableResult
