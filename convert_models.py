@@ -17,13 +17,20 @@ import coremltools as ct
 
 TILE = 256
 
+BASE = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/"
+GENERAL = BASE + "realesr-general-x4v3.pth"
+GENERAL_WDN = BASE + "realesr-general-wdn-x4v3.pth"   # версия с сильным шумоподавлением
+ANIME = BASE + "realesr-animevideov3.pth"
+
 MODELS = [
-    # (имя в приложении, адрес весов, число сверточных слоёв)
-    ("NeuralGeneral",
-     "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth", 32),
-    ("NeuralLight",
-     "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth", 16),
+    # (имя в приложении, [(адрес весов, доля)], число сверточных слоёв)
+    ("NeuralGeneral", [(GENERAL, 1.0)], 32),
+    ("NeuralLight", [(ANIME, 1.0)], 16),
+    # смесь весов: больше шумоподавления, поэтому однотонные текстуры сглаживаются сильнее
+    ("NeuralSmooth", [(GENERAL_WDN, 0.85), (GENERAL, 0.15)], 32),
 ]
+
+_weights_cache = {}
 
 
 class SRVGGNetCompact(nn.Module):
@@ -61,15 +68,34 @@ class Wrapper(nn.Module):
         return torch.clamp(self.net(x), 0.0, 1.0) * 255.0
 
 
-def convert(name, url, num_conv):
-    print(f"=== {name}: скачиваю веса ===", flush=True)
-    pth = f"weights_{name}.pth"
-    urllib.request.urlretrieve(url, pth)
+def load_weights(url):
+    if url not in _weights_cache:
+        print(f"=== скачиваю {os.path.basename(url)} ===", flush=True)
+        path = "weights_" + os.path.basename(url)
+        urllib.request.urlretrieve(url, path)
+        state = torch.load(path, map_location="cpu")
+        key = "params_ema" if "params_ema" in state else "params"
+        _weights_cache[url] = state[key]
+        os.remove(path)
+    return _weights_cache[url]
 
-    state = torch.load(pth, map_location="cpu")
-    key = "params_ema" if "params_ema" in state else "params"
+
+def blend_weights(sources):
+    """Смешивает веса нескольких сетей (так в Real-ESRGAN регулируют силу шумоподавления)."""
+    if len(sources) == 1:
+        return load_weights(sources[0][0])
+    total = sum(weight for _, weight in sources)
+    states = [(load_weights(url), weight / total) for url, weight in sources]
+    result = {}
+    for key in states[0][0]:
+        result[key] = sum(state[key].float() * weight for state, weight in states)
+    return result
+
+
+def convert(name, sources, num_conv):
+    weights = blend_weights(sources)
     net = SRVGGNetCompact(num_conv=num_conv)
-    net.load_state_dict(state[key], strict=True)
+    net.load_state_dict(weights, strict=True)
     net.eval()
 
     wrapped = Wrapper(net).eval()
@@ -97,7 +123,6 @@ def convert(name, url, num_conv):
     print(f"=== {name}: компилирую ===", flush=True)
     subprocess.run(["xcrun", "coremlcompiler", "compile", package, "Models"], check=True)
     shutil.rmtree(package)
-    os.remove(pth)
 
 
 def add_models_to_project():
@@ -116,9 +141,9 @@ def add_models_to_project():
 
 def main():
     ok = []
-    for name, url, num_conv in MODELS:
+    for name, sources, num_conv in MODELS:
         try:
-            convert(name, url, num_conv)
+            convert(name, sources, num_conv)
             ok.append(name)
             print(f"::notice::Нейро-модель {name} собрана")
         except Exception as e:  # noqa: BLE001

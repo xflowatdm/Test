@@ -20,6 +20,7 @@ struct GradeParams: Equatable {
     var denoise: Double = 0         // 0...1 сглаживание шума и текстур (края сохраняются)
     var clarity: Double = 0         // 0...1 локальный контраст («HDR-вид»)
     var curve: Double = 0           // 0...1 S-кривая (глубина)
+    var flatten: Double = 0         // 0...1 «кисть»: сглаживание однотонных участков, края остаются чёткими
     /// Сила автоподбора по референсу 0...1
     var matchStrength: Double = 1
 }
@@ -67,6 +68,11 @@ enum ColorGrader {
     static func apply(to input: CIImage, params p: GradeParams, match: MatchCurve?) -> CIImage {
         var img = input
         let extent = input.extent
+
+        // 00) «Кисть»: однотонные участки заливаются цветом, края остаются чёткими
+        if p.flatten > 0.001 {
+            img = flatten(img, strength: p.flatten, extent: extent)
+        }
 
         // 0) Шумоподавление и сглаживание текстур (края сохраняются)
         if p.denoise > 0.001 {
@@ -179,6 +185,63 @@ enum ColorGrader {
         }
 
         return img.cropped(to: extent)
+    }
+
+    // MARK: Кисть (сглаживание однотонных участков с сохранением краёв)
+
+    private static func ci(_ name: String, _ image: CIImage, _ params: [String: Any] = [:]) -> CIImage? {
+        guard let filter = CIFilter(name: name) else { return nil }
+        filter.setValue(image, forKey: kCIInputImageKey)
+        for (key, value) in params {
+            filter.setValue(value, forKey: key)
+        }
+        return filter.outputImage
+    }
+
+    private static func flatten(_ input: CIImage, strength s: Double, extent: CGRect) -> CIImage {
+        let scale = max(1.0, max(extent.width, extent.height) / 1920.0)
+
+        // 1) Мелкие вкрапления убираем медианным фильтром
+        var base = input
+        let passes = s > 0.66 ? 3 : (s > 0.33 ? 2 : 1)
+        for _ in 0..<passes {
+            if let out = ci("CIMedianFilter", base) { base = out.cropped(to: extent) }
+        }
+
+        // 2) Карта краёв: белое — однотонные участки, чёрное — края
+        guard let edges = ci("CIEdges", base, ["inputIntensity": 8.0 - 6.0 * s]) else { return base }
+        var mask = edges
+        if let gray = ci("CIColorControls", mask, [kCIInputSaturationKey: 0.0, kCIInputContrastKey: 1.0]) {
+            mask = gray
+        }
+        if let soft = ci("CIGaussianBlur", mask.clampedToExtent(), [kCIInputRadiusKey: 1.5 * scale]) {
+            mask = soft.cropped(to: extent)
+        }
+        if let inverted = ci("CIColorInvert", mask) { mask = inverted }
+        if let hard = ci("CIColorControls", mask, [kCIInputContrastKey: 2.0]) { mask = hard }
+
+        // 3) Сильно размытая копия
+        let radius = (1.5 + 6.0 * s) * scale
+        guard let blurred = ci("CIGaussianBlur", base.clampedToExtent(), [kCIInputRadiusKey: radius]) else {
+            return base
+        }
+
+        // 4) Однотонные участки берём из размытой копии, края оставляем как есть
+        guard let blended = ci(
+            "CIBlendWithMask",
+            blurred.cropped(to: extent),
+            ["inputBackgroundImage": base, "inputMaskImage": mask]
+        ) else { return base }
+
+        // 5) Подчёркиваем края
+        var result = blended.cropped(to: extent)
+        if let crisp = ci(
+            "CIUnsharpMask", result,
+            [kCIInputRadiusKey: 1.2 * scale, kCIInputIntensityKey: 0.35 + 0.5 * s]
+        ) {
+            result = crisp.cropped(to: extent)
+        }
+        return result
     }
 
     private static func vector(_ c: [Double], strength s: Double) -> CIVector {
@@ -371,6 +434,17 @@ extension GradeParams {
         p.sharpness = 0.5
         p.curve = 0.20
         p.vibrance = 0.15
+        return p
+    }
+
+    /// «Рисованная» картинка: однотонные участки заливаются цветом, края остаются чёткими
+    static var painted: GradeParams {
+        var p = GradeParams()
+        p.flatten = 0.7
+        p.denoise = 0.2
+        p.clarity = 0.25
+        p.sharpness = 0.8
+        p.vibrance = 0.2
         return p
     }
 }

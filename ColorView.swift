@@ -122,6 +122,9 @@ struct ColorScreen: View {
             SelectRow(title: "Чёткая картинка", subtitle: "Чище и чётче, цвет почти не меняется", selected: false) {
                 color.applyPreset(.crisp)
             }
+            SelectRow(title: "Рисованный", subtitle: "Однотонные текстуры заливаются цветом, края чёткие", selected: false) {
+                color.applyPreset(.painted)
+            }
             SelectRow(title: "Сбросить настройки", subtitle: "Вернуть все ползунки в нейтральное положение", selected: false) {
                 color.resetAll()
             }
@@ -163,6 +166,7 @@ struct ColorScreen: View {
 
     private var details: some View {
         VStack(alignment: .leading, spacing: 16) {
+            GradeSlider(title: "Кисть: заливка однотонных участков", value: $color.params.flatten, range: 0...1, neutral: 0)
             GradeSlider(title: "Сглаживание шума и текстур", value: $color.params.denoise, range: 0...1, neutral: 0)
             GradeSlider(title: "Чёткость (локальный контраст)", value: $color.params.clarity, range: 0...1, neutral: 0)
             GradeSlider(title: "Резкость", value: $color.params.sharpness, range: 0...2, neutral: 0)

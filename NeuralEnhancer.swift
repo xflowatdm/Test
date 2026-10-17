@@ -8,6 +8,7 @@ import Accelerate
 enum NeuralModel: String, CaseIterable, Identifiable {
     case general = "NeuralGeneral"
     case light = "NeuralLight"
+    case smooth = "NeuralSmooth"
 
     var id: String { rawValue }
 
@@ -15,6 +16,7 @@ enum NeuralModel: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "Универсальная"
         case .light: return "Лёгкая"
+        case .smooth: return "Сильное сглаживание"
         }
     }
 
@@ -24,6 +26,8 @@ enum NeuralModel: String, CaseIterable, Identifiable {
             return "Real-ESRGAN General v3. Лучше для обычной картинки и игр, но примерно вдвое медленнее."
         case .light:
             return "Real-ESRGAN AnimeVideo v3. Вдвое быстрее, но картинка может стать более «рисованной»."
+        case .smooth:
+            return "Real-ESRGAN General v3 в режиме сильного шумоподавления. Заливает однотонные текстуры и вкрапления, края остаются чёткими. Скорость как у «Универсальной»."
         }
     }
 
