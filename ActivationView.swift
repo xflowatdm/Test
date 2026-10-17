@@ -32,7 +32,7 @@ struct ActivationView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            SplitTone {
+            OnGradient {
                 Image(systemName: "play.rectangle.fill")
                     .font(.system(size: 24, weight: .bold))
                     .frame(width: 52, height: 52)

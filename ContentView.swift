@@ -91,7 +91,7 @@ struct BottomBar: View {
                 Text(title)
                     .font(.system(size: 16, weight: .semibold))
             }
-            .foregroundStyle(selected ? Theme.textPrimary : Theme.textSecondary)
+            .foregroundStyle(Color.white)
             .frame(maxWidth: .infinity)
             .frame(height: 48)
             .background(

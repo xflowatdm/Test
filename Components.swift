@@ -1,10 +1,9 @@
 import SwiftUI
 
-// MARK: - Текст поверх градиента «чёрный → белый»
+// MARK: - Текст поверх градиента
 
-/// Слева, где фон тёмный, содержимое белое, справа, где фон светлый, чёрное.
-/// Так текст и значки читаются на любом конце градиента.
-struct SplitTone<Content: View>: View {
+/// Белый текст (или значок) с небольшой тенью сзади, чтобы читался на любом месте градиента
+struct OnGradient<Content: View>: View {
     let content: Content
 
     init(@ViewBuilder _ content: () -> Content) {
@@ -12,14 +11,10 @@ struct SplitTone<Content: View>: View {
     }
 
     var body: some View {
-        ZStack {
-            content
-                .foregroundStyle(Color.white)
-                .mask(HStack(spacing: 0) { Rectangle(); Color.clear })
-            content
-                .foregroundStyle(Color.black)
-                .mask(HStack(spacing: 0) { Color.clear; Rectangle() })
-        }
+        content
+            .foregroundStyle(Color.white)
+            .shadow(color: Color.black.opacity(0.6), radius: 1.5, x: 0, y: 1)
+            .shadow(color: Color.black.opacity(0.35), radius: 4, x: 0, y: 0)
     }
 }
 
@@ -93,7 +88,7 @@ struct PillTabs: View {
                     } label: {
                         Group {
                             if selected {
-                                SplitTone {
+                                OnGradient {
                                     Text(titles[i]).font(.system(size: 15, weight: .semibold))
                                 }
                             } else {
@@ -288,7 +283,7 @@ struct ChipRow: View {
                 } label: {
                     Group {
                         if selected {
-                            SplitTone {
+                            OnGradient {
                                 Text(label(v)).font(.system(size: 14, weight: .semibold))
                             }
                         } else {
@@ -337,7 +332,7 @@ struct PrimaryLabel: View {
             if dark {
                 label.foregroundStyle(Color.white)
             } else {
-                SplitTone { label }
+                OnGradient { label }
             }
         }
         .frame(height: 52)
