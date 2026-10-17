@@ -5,6 +5,8 @@ import Photos
 
 struct VideoFile: Transferable {
     let url: URL
+    /// Исходное имя файла (для подписи под видео)
+    var name: String = ""
 
     static var transferRepresentation: some TransferRepresentation {
         FileRepresentation(contentType: .movie) { video in
@@ -14,7 +16,7 @@ struct VideoFile: Transferable {
             let dest = FileManager.default.temporaryDirectory
                 .appendingPathComponent("src_\(UUID().uuidString).\(ext)")
             try FileManager.default.copyItem(at: received.file, to: dest)
-            return VideoFile(url: dest)
+            return VideoFile(url: dest, name: received.file.lastPathComponent)
         }
     }
 }
@@ -34,34 +36,76 @@ enum RenderState {
     case failed(String)
 }
 
+/// Настройки рендера по умолчанию (и после «Сбросить настройки рендера»)
+enum RenderDefaults {
+    static let targetFPS = 60
+    static let motionBlur: Double = 50
+    static let sharpness: Double = 50
+    static let bitrate: Double = 150
+}
+
+/// Строка на вкладке «Задачи»
+struct RenderJob: Identifiable {
+    enum Status {
+        case running(Double)
+        case done
+        case failed(String)
+    }
+
+    let id = UUID()
+    var name: String
+    var summary: String
+    var url: URL?
+    var status: Status
+    var message: String?
+}
+
 @MainActor
 final class RenderViewModel: ObservableObject {
     @Published var sourceURL: URL?
     @Published var info: VideoInfo?
+    @Published var fileName = ""
     @Published var player: AVPlayer?
     @Published var isLoading = false
+    @Published var loadProgress: Double = 0
+    /// Растёт при каждой неудачной загрузке видео (для тряски и тоста)
+    @Published var loadFailCount = 0
     @Published var smoothing = false
-    @Published var motionBlur: Double = 0
-    @Published var sharpness: Double = 0
+    @Published var motionBlur: Double = RenderDefaults.motionBlur
+    @Published var sharpness: Double = RenderDefaults.sharpness
     @Published var codec: VideoCodec = .hevc10
     @Published var neuralEnabled = false
     @Published var neuralModel: NeuralModel = NeuralModel.available.first ?? .general
     @Published var neuralStrength: Double = 60
     @Published var applyColor = false
     @Published var smartPacing = true
-    @Published var targetFPS = 120
+    @Published var targetFPS = RenderDefaults.targetFPS
     @Published var colorReady = false
+    /// Плеер раскрытой задачи на вкладке «Задачи»
     @Published var resultPlayer: AVPlayer?
-    @Published var bitrate: Double = 40
+    @Published var bitrate: Double = RenderDefaults.bitrate
     @Published var state: RenderState = .idle
     @Published var stageText = ""
     @Published var previousCrash: String?
 
+    @Published var jobs: [RenderJob] = []
+    @Published var expandedJob: UUID?
+    /// Сколько рендеров завершилось, пока вкладка «Задачи» была закрыта
+    @Published var unseenDone = 0
+    @Published var renderStartedAt: Date?
+    /// Растут при завершении и при ошибке рендера (для анимаций кнопки и тостов)
+    @Published var finishCount = 0
+    @Published var failCount = 0
+    @Published var lastMessage = ""
+    @Published var savedToPhotos = true
+
     private var task: Task<Void, Never>?
+    private var loadObservation: NSKeyValueObservation?
 
     init() {
         // Если прошлый рендер оборвался вылетом, здесь будет последний этап
         previousCrash = Breadcrumb.last
+        loadHistory()
     }
 
     var neuralAvailable: Bool { !NeuralModel.available.isEmpty }
@@ -90,6 +134,39 @@ final class RenderViewModel: ObservableObject {
         return base1080p30 * pixels * (info.fps * 2 / 30)
     }
 
+    // MARK: Сводки для экранов
+
+    /// Итоговая частота кадров
+    var outputFPSText: String {
+        if smartPacing { return "\(targetFPS) к/с" }
+        guard let info else { return "×2" }
+        return "\(Int((info.fps * 2).rounded())) к/с"
+    }
+
+    var smoothSummary: String {
+        (smartPacing ? "\(targetFPS) к/с" : "×2") + (smoothing ? " + сглаж." : "")
+    }
+
+    var qualitySummary: String {
+        codec.usesBitrate ? "\(codec.title), \(Int(bitrate)) Мб/с" : codec.title
+    }
+
+    var renderSummary: String {
+        var parts = [outputFPSText, codec.title]
+        if smoothing { parts.append("сглаживание") }
+        if neuralEnabled { parts.append("нейро") }
+        if applyColor { parts.append("цвет") }
+        return parts.joined(separator: ", ")
+    }
+
+    var videoMeta: String {
+        guard let info else { return "" }
+        let s = Int(info.duration.rounded())
+        return "\(info.width)×\(info.height), \(Int(info.fps.rounded())) к/с, "
+            + String(format: "%02d:%02d", s / 60, s % 60)
+            + String(format: " · %.0f Мбит/с", info.bitrateMbps)
+    }
+
     func refreshColorState() {
         colorReady = GradeStore.isConfigured
         if !colorReady { applyColor = false }
@@ -100,22 +177,86 @@ final class RenderViewModel: ObservableObject {
         previousCrash = nil
     }
 
+    /// Возвращает настройки рендера к исходным
+    func resetSettings() {
+        smoothing = false
+        motionBlur = RenderDefaults.motionBlur
+        sharpness = RenderDefaults.sharpness
+        codec = .hevc10
+        neuralEnabled = false
+        neuralModel = NeuralModel.available.first ?? .general
+        neuralStrength = 60
+        applyColor = false
+        smartPacing = true
+        targetFPS = RenderDefaults.targetFPS
+        bitrate = RenderDefaults.bitrate
+    }
+
+    // MARK: Задачи
+
+    func toggleExpand(_ job: RenderJob) {
+        if expandedJob == job.id {
+            expandedJob = nil
+            resultPlayer?.pause()
+            resultPlayer = nil
+        } else if let url = job.url, case .done = job.status {
+            expandedJob = job.id
+            resultPlayer = AVPlayer(url: url)
+        }
+    }
+
+    /// Готовые ролики из прошлых запусков (папка «Файлы» → Smooth Frames)
+    private func loadHistory() {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let keys: [URLResourceKey] = [.creationDateKey, .fileSizeKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: documents, includingPropertiesForKeys: keys
+        ) else { return }
+
+        let items: [(url: URL, date: Date, size: Int)] = files
+            .filter { $0.lastPathComponent.hasPrefix("Smooth_") && $0.pathExtension.lowercased() == "mov" }
+            .map { url -> (url: URL, date: Date, size: Int) in
+                let values = try? url.resourceValues(forKeys: Set(keys))
+                return (url: url, date: values?.creationDate ?? .distantPast, size: values?.fileSize ?? 0)
+            }
+            .sorted { $0.date > $1.date }
+
+        jobs = items.map { item in
+            let size = ByteCountFormatter.string(fromByteCount: Int64(item.size), countStyle: .file)
+            return RenderJob(
+                name: item.url.lastPathComponent,
+                summary: "\(item.date.formatted(date: .abbreviated, time: .shortened)) · \(size)",
+                url: item.url,
+                status: .done
+            )
+        }
+    }
+
+    private func updateJob(_ id: UUID, _ change: (inout RenderJob) -> Void) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        change(&jobs[index])
+    }
+
     // MARK: Загрузка видео
 
     func load(_ item: PhotosPickerItem?) async {
         guard let item else { return }
         isLoading = true
+        loadProgress = 0
         state = .idle
-        resultPlayer = nil
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            loadObservation?.invalidate()
+            loadObservation = nil
+        }
         do {
-            guard let file = try await item.loadTransferable(type: VideoFile.self) else {
-                state = .failed("Не удалось загрузить видео.")
+            guard let file = try await loadFile(item) else {
+                failLoad("Не удалось загрузить видео.")
                 return
             }
             let asset = AVURLAsset(url: file.url)
             guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-                state = .failed("В файле нет видео.")
+                failLoad("В файле нет видео.")
                 return
             }
             let size = try await track.load(.naturalSize)
@@ -128,16 +269,35 @@ final class RenderViewModel: ObservableObject {
                 width: Int(size.width), height: Int(size.height),
                 fps: Double(fps), duration: duration, bitrateMbps: sourceMbps
             )
+            loadProgress = 1
             self.info = info
+            self.fileName = file.name.isEmpty ? file.url.lastPathComponent : file.name
             self.sourceURL = file.url
             self.player = AVPlayer(url: file.url)
-
-            // Стартовый битрейт: ~1.5× от исходного, округлённо до 5
-            let suggested = (sourceMbps * 1.5 / 5).rounded() * 5
-            self.bitrate = min(150, max(10, suggested == 0 ? 40 : suggested))
         } catch {
-            state = .failed(error.localizedDescription)
+            failLoad(error.localizedDescription)
         }
+    }
+
+    /// Загрузка из галереи с настоящим процентом готовности
+    private func loadFile(_ item: PhotosPickerItem) async throws -> VideoFile? {
+        try await withCheckedThrowingContinuation { continuation in
+            let progress = item.loadTransferable(type: VideoFile.self) { result in
+                continuation.resume(with: result)
+            }
+            loadObservation = progress.observe(\.fractionCompleted, options: [.initial, .new]) { [weak self] p, _ in
+                let value = p.fractionCompleted
+                Task { @MainActor in
+                    guard let self, self.isLoading else { return }
+                    self.loadProgress = max(self.loadProgress, min(value, 0.99))
+                }
+            }
+        }
+    }
+
+    private func failLoad(_ message: String) {
+        state = .failed(message)
+        loadFailCount += 1
     }
 
     // MARK: Рендер
@@ -154,11 +314,17 @@ final class RenderViewModel: ObservableObject {
         stamp.dateFormat = "yyyyMMdd_HHmmss"
         let output = documents.appendingPathComponent("Smooth_\(stamp.string(from: Date())).mov")
 
+        let job = RenderJob(name: fileName, summary: renderSummary, url: nil, status: .running(0))
+        let jobID = job.id
+        jobs.insert(job, at: 0)
+
         player?.pause()
         previousCrash = nil
         resultPlayer = nil
+        expandedJob = nil
         stageText = "Подготовка"
         state = .rendering(0)
+        renderStartedAt = Date()
         Breadcrumb.set("старт рендера")
         UIApplication.shared.isIdleTimerDisabled = true
 
@@ -172,6 +338,7 @@ final class RenderViewModel: ObservableObject {
                             guard let self, self.isRendering else { return }
                             self.state = .rendering(value)
                             self.stageText = stage
+                            self.updateJob(jobID) { $0.status = .running(value) }
                         }
                     }
                 )
@@ -180,21 +347,37 @@ final class RenderViewModel: ObservableObject {
                 stageText = "Сохранение в «Фото»"
                 Breadcrumb.set("сохранение в Фото")
                 var message = "Готово! Видео сохранено в «Фото» и в «Файлы» → Smooth Frames."
+                savedToPhotos = true
                 do {
                     try await Self.saveToPhotos(output)
                 } catch {
+                    savedToPhotos = false
                     message = "Готово! Видео лежит в «Файлы» → Smooth Frames. В «Фото» сохранить не вышло: \(error.localizedDescription)"
                 }
                 Breadcrumb.clear()
+                updateJob(jobID) {
+                    $0.status = .done
+                    $0.url = output
+                    $0.message = message
+                }
+                expandedJob = jobID
                 resultPlayer = AVPlayer(url: output)
                 state = .done(output, message)
+                lastMessage = message
+                unseenDone += 1
+                finishCount += 1
             } catch is CancellationError {
                 Breadcrumb.clear()
+                jobs.removeAll { $0.id == jobID }
                 state = .idle
             } catch {
                 Breadcrumb.clear()
+                updateJob(jobID) { $0.status = .failed(error.localizedDescription) }
                 state = .failed(error.localizedDescription)
+                lastMessage = error.localizedDescription
+                failCount += 1
             }
+            renderStartedAt = nil
         }
     }
 

@@ -2,372 +2,570 @@ import SwiftUI
 import PhotosUI
 import AVKit
 
-// MARK: - Экран «Рендер»
+/// Экраны, которые открываются из вкладки «Видео»
+enum VideoRoute: Hashable {
+    case color
+    case grade(GradeGroup)
+}
 
-struct RenderScreen: View {
+// MARK: - Видео
+
+struct VideoScreen: View {
     @ObservedObject var render: RenderViewModel
-    @ObservedObject var license: LicenseManager
-    @State private var tab = 0
+    @ObservedObject var color: ColorViewModel
+    @Binding var tab: AppTab
+
+    @State private var path: [VideoRoute] = []
     @State private var pickerItem: PhotosPickerItem?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionHeader(title: "Рендер", subtitle: "Плавность, качество и сохранение")
-                PillTabs(titles: ["Видео", "Плавность", "Качество", "Запуск"], selection: $tab)
+        NavigationStack(path: $path) {
+            List {
+                if let crash = render.previousCrash {
+                    Section {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Прошлый рендер оборвался вылетом", systemImage: "exclamationmark.triangle")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Theme.text)
+                            Text("Последний этап: \(crash)")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.text2)
+                        }
+                        .padding(.vertical, 3)
+                        ActionRow(title: "Скрыть") { render.dismissCrashNote() }
+                    }
+                    .surfaceRow()
+                }
 
-                switch tab {
-                case 0:
-                    videoTab
-                case 1:
-                    smoothTab
-                case 2:
-                    qualityTab
-                default:
-                    runTab
+                Section {
+                    VideoStage(render: render, pickerItem: $pickerItem)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .rise(1)
+
+                    if render.info != nil {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(render.fileName)
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(Theme.text)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(render.videoMeta)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.text2)
+                        }
+                        .listRowInsets(EdgeInsets(top: 12, leading: 4, bottom: 0, trailing: 4))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                } footer: {
+                    if case .failed(let message) = render.state {
+                        Label(message, systemImage: "exclamationmark.triangle")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.text2)
+                    }
+                }
+
+                Section {
+                    SwitchRow(
+                        title: "Нейро-улучшение",
+                        sub: render.neuralAvailable
+                            ? "Убирает шум и артефакты сжатия, дорисовывает текстуры. Очень долго: рендер растёт в десятки раз, телефон греется."
+                            : "Нейромодель не попала в сборку. Нужны логи конвертации на GitHub (блок Annotations).",
+                        tag: "Эксперимент",
+                        isOn: $render.neuralEnabled,
+                        disabled: !render.neuralAvailable
+                    )
+                    if render.neuralEnabled && render.neuralAvailable {
+                        ForEach(NeuralModel.available) { model in
+                            TickRow(
+                                title: model.title,
+                                sub: model.details,
+                                selected: render.neuralModel == model,
+                                indent: true
+                            ) {
+                                render.neuralModel = model
+                            }
+                        }
+                        GradeSlider(
+                            title: "Сила нейро-эффекта",
+                            value: $render.neuralStrength,
+                            range: 10...100,
+                            neutral: 60,
+                            format: "%.0f",
+                            step: 5
+                        )
+                        .padding(.leading, 16)
+                    }
+                } header: {
+                    SectionLabel("Улучшение")
+                }
+                .surfaceRow()
+                .rise(2)
+
+                Section {
+                    ChevronRow(title: "Плавность", value: render.smoothSummary) { tab = .smooth }
+                    ChevronRow(title: "Качество", value: render.qualitySummary) { tab = .quality }
+                    NavigationLink(value: VideoRoute.color) {
+                        HStack {
+                            ItemLabel(title: "Цвет")
+                            Spacer(minLength: 8)
+                            RollText(text: colorSummary)
+                                .font(.system(size: 16))
+                                .foregroundStyle(Theme.text2)
+                        }
+                    }
+                } header: {
+                    SectionLabel("Параметры рендера")
+                }
+                .surfaceRow()
+                .rise(3)
+            }
+            .themedList()
+            .animation(Theme.soft, value: render.neuralEnabled)
+            .animation(Theme.soft, value: render.info != nil)
+            .navigationTitle("Рендер")
+            .navigationDestination(for: VideoRoute.self) { route in
+                switch route {
+                case .color:
+                    ColorScreen(color: color, render: render) { path.removeAll() }
+                case .grade(let group):
+                    GradeGroupScreen(group: group, color: color)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 24)
         }
         .onChange(of: pickerItem) { _, item in
-            Task { await render.load(item) }
+            guard let item else { return }
+            Task {
+                await render.load(item)
+                pickerItem = nil
+            }
         }
     }
 
-    // MARK: Видео
+    private var colorSummary: String {
+        if render.applyColor { return "Вкл" }
+        return render.colorReady ? "Выкл" : "Не настроен"
+    }
+}
 
-    private var videoTab: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let crash = render.previousCrash {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Прошлый рендер оборвался вылетом", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.orange)
-                    Text("Последний этап: \(crash)")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.textSecondary)
-                    Button("Скрыть") { render.dismissCrashNote() }
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .themedCard()
+// MARK: - Блок выбора видео
+
+/// Карточка загрузки, которая после выбора превращается в плеер
+private struct VideoStage: View {
+    @ObservedObject var render: RenderViewModel
+    @Binding var pickerItem: PhotosPickerItem?
+
+    private var loaded: Bool { render.player != nil && !render.isLoading }
+
+    var body: some View {
+        ZStack {
+            PhotosPicker(selection: $pickerItem, matching: .videos) {
+                UploadCard(loading: render.isLoading, progress: render.loadProgress)
             }
+            .buttonStyle(PressStyle(scale: 0.98))
+            .disabled(render.isRendering || render.isLoading)
+            .opacity(loaded ? 0 : 1)
+            .scaleEffect(loaded ? 0.94 : 1)
+            .blur(radius: loaded ? 8 : 0)
+            .allowsHitTesting(!loaded)
 
             if let player = render.player {
-                VideoPlayer(player: player)
-                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            }
-
-            PhotosPicker(selection: $pickerItem, matching: .videos) {
-                PrimaryLabel(
-                    title: render.info == nil ? "Выбрать видео" : "Выбрать другое видео",
-                    icon: "video.badge.plus"
-                )
-            }
-            .disabled(render.isRendering || render.isLoading)
-
-            if render.isLoading {
-                HStack(spacing: 10) {
-                    ProgressView().tint(Color.white)
-                    Text("Загружаю видео…").foregroundStyle(Theme.textSecondary)
-                }
-            }
-
-            if let info = render.info {
-                VStack(spacing: 0) {
-                    InfoRow(label: "Разрешение", value: "\(info.width)×\(info.height)")
-                    InfoRow(label: "Частота кадров", value: "\(Int(info.fps.rounded())) к/с")
-                    InfoRow(label: "Длительность", value: formatDuration(info.duration))
-                    InfoRow(label: "Битрейт", value: String(format: "%.0f Мбит/с", info.bitrateMbps), divider: false)
-                }
-                .themedCard()
-            }
-
-            if case .failed(let message) = render.state {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.red)
-            }
-
-            licenseCard
-        }
-    }
-
-    private var licenseCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            SmallCaption(text: "Лицензия")
-            VStack(spacing: 0) {
-                InfoRow(label: "Статус", value: license.statusText)
-                if case .active(let p) = license.state {
-                    InfoRow(label: "Ключ", value: p.id)
-                }
-                InfoRow(label: "Код устройства", value: license.deviceCode, divider: false)
-            }
-            .themedCard()
-
-            if case .active = license.state {
-                PrimaryButton(title: "Сменить ключ", icon: "key.fill", dark: true) { license.deactivate() }
-                    .disabled(render.isRendering)
-            }
-        }
-    }
-
-    // MARK: Плавность
-
-    private var smoothTab: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SmallCaption(text: "Темп кадров")
-            ToggleRow(
-                title: "Умный темп кадров",
-                caption: "В записях игр кадры часто приходят неровно или повторяются. Приложение пропускает повторы и достраивает кадры на ровной сетке, движение становится плавнее. Рекомендуется.",
-                icon: "speedometer", isOn: $render.smartPacing
-            )
-            if render.smartPacing {
-                ForEach([60, 90, 120], id: \.self) { fps in
-                    SelectRow(
-                        title: "\(fps) к/с",
-                        subtitle: fps == 120 ? "Рекомендуется для iPhone с ProMotion" : nil,
-                        selected: render.targetFPS == fps
-                    ) {
-                        render.targetFPS = fps
+                MediaView(player: player) {
+                    PhotosPicker(selection: $pickerItem, matching: .videos) {
+                        MediaCornerLabel(title: "Заменить", icon: "arrow.left.arrow.right")
                     }
+                    .buttonStyle(PressStyle())
+                    .disabled(render.isRendering || render.isLoading)
                 }
-            } else {
-                Text("Выключено: каждый кадр просто удваивается (например, 60 → 120).")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.textSecondary)
+                .opacity(loaded ? 1 : 0)
+                .scaleEffect(loaded ? 1 : 1.04)
+                .blur(radius: loaded ? 0 : 10)
+                .allowsHitTesting(loaded)
             }
-
-            SmallCaption(text: "Интерполяция")
-            ToggleRow(
-                title: "Сглаживание (экспериментально)",
-                caption: "Режим повышенного качества расчёта движения. На резких поворотах камеры может рвать картинку, тогда выключи.",
-                icon: "wand.and.stars", isOn: $render.smoothing
-            )
-
-            SmallCaption(text: "Размытие движения")
-            VStack(alignment: .leading, spacing: 12) {
-                GradeSlider(
-                    title: "Сила размытия",
-                    value: $render.motionBlur,
-                    range: 0...100,
-                    neutral: 0,
-                    format: "%.0f",
-                    step: 5
-                )
-                ChipRow(
-                    values: [0, 25, 50, 75],
-                    current: render.motionBlur,
-                    label: { $0 == 0 ? "Выкл" : "\(Int($0))" },
-                    action: { render.motionBlur = $0 }
-                )
-                Text("Имитирует выдержку камеры: быстрые объекты слегка смазываются. Для максимальной чёткости держи выключенным. Рендер идёт заметно дольше.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            .themedCard()
         }
+        .frame(height: 260)
+        .animation(Theme.soft.delay(loaded ? 0.12 : 0), value: loaded)
+        .shake(render.loadFailCount)
     }
+}
 
-    // MARK: Качество
+private struct UploadCard: View {
+    let loading: Bool
+    let progress: Double
 
-    private var qualityTab: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            SmallCaption(text: "Нейро-улучшение")
-            ToggleRow(
-                title: "Нейро-улучшение (экспериментально)",
-                caption: render.neuralAvailable
-                    ? "Убирает шум и артефакты сжатия, дорисовывает текстуры. Очень долго: рендер растёт в десятки раз, телефон греется."
-                    : "Нейромодель не попала в сборку. Нужны логи конвертации на GitHub (блок Annotations).",
-                icon: "cpu", isOn: $render.neuralEnabled,
-                disabled: !render.neuralAvailable
-            )
-            if render.neuralEnabled && render.neuralAvailable {
-                ForEach(NeuralModel.available) { model in
-                    SelectRow(
-                        title: model.title,
-                        subtitle: model.details,
-                        selected: render.neuralModel == model
-                    ) {
-                        render.neuralModel = model
+    var body: some View {
+        VStack(spacing: 6) {
+            UploadOrb(loading: loading, progress: progress)
+                .padding(.bottom, 16)
+            ZStack {
+                VStack(spacing: 6) {
+                    Text("Выбери видео")
+                        .font(.system(size: 18, weight: .semibold))
+                        .tracking(-0.3)
+                    Text("Нажми, чтобы загрузить из галереи")
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(Theme.text2)
+                }
+                .opacity(loading ? 0 : 1)
+                .offset(y: loading ? -8 : 0)
+
+                VStack(spacing: 6) {
+                    Text("Загружаю")
+                        .font(.system(size: 18, weight: .semibold))
+                        .tracking(-0.3)
+                    Text("\(Int(progress * 100))%")
+                        .font(.system(size: 13.5).monospacedDigit())
+                        .foregroundStyle(Theme.text2)
+                        .contentTransition(.numericText())
+                }
+                .opacity(loading ? 1 : 0)
+                .offset(y: loading ? 0 : 8)
+            }
+        }
+        .foregroundStyle(Theme.text)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .animation(Theme.soft, value: loading)
+    }
+}
+
+// MARK: - Плавность
+
+struct SmoothScreen: View {
+    @ObservedObject var render: RenderViewModel
+    @EnvironmentObject private var ui: AppUI
+
+    private let rates = [60, 90, 120]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    SwitchRow(
+                        title: "Умный темп кадров",
+                        sub: "В записях игр кадры часто приходят неровно или повторяются. Приложение пропускает повторы и достраивает кадры на ровной сетке, движение становится плавнее. Рекомендуется.",
+                        isOn: $render.smartPacing
+                    )
+                    if render.smartPacing {
+                        ValueRow(title: "Частота кадров", value: "\(render.targetFPS) к/с") {
+                            ui.pick(
+                                "Частота кадров",
+                                options: rates.map { SheetOption(title: "\($0) к/с", detail: $0 == 120 ? "Рекомендуется для ProMotion" : nil) },
+                                selected: rates.firstIndex(of: render.targetFPS)
+                            ) { render.targetFPS = rates[$0] }
+                        }
                     }
+                    SwitchRow(
+                        title: "Сглаживание",
+                        sub: "Режим повышенного качества расчёта движения. На резких поворотах камеры может рвать картинку, тогда выключи.",
+                        tag: "Эксперимент",
+                        isOn: $render.smoothing
+                    )
+                } footer: {
+                    Note(render.smartPacing
+                         ? "Больше кадров — плавнее движение, но рендер займёт больше времени."
+                         : "Выключено: каждый кадр просто удваивается (например, 60 → 120).")
                 }
-                GradeSlider(
-                    title: "Сила нейро-эффекта",
-                    value: $render.neuralStrength,
-                    range: 10...100,
-                    neutral: 60,
-                    format: "%.0f",
-                    step: 5
-                )
-                .themedCard()
-            }
+                .surfaceRow()
+                .rise(1)
 
-            SmallCaption(text: "Резкость достроенных кадров")
-            VStack(alignment: .leading, spacing: 12) {
-                GradeSlider(
-                    title: "Резкость",
-                    value: $render.sharpness,
-                    range: 0...100,
-                    neutral: 0,
-                    format: "%.0f",
-                    step: 5
-                )
-                ChipRow(
-                    values: [0, 25, 50, 75],
-                    current: render.sharpness,
-                    label: { $0 == 0 ? "Выкл" : "\(Int($0))" },
-                    action: { render.sharpness = $0 }
-                )
-                Text("Подтягивает чёткость промежуточных кадров, они обычно мягче оригинальных. Исходные кадры не меняются.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.textSecondary)
-            }
-            .themedCard()
-
-            SmallCaption(text: "Кодек")
-            ForEach(VideoCodec.allCases) { codec in
-                SelectRow(
-                    title: codec.title,
-                    subtitle: codec.details,
-                    selected: render.codec == codec
-                ) {
-                    render.codec = codec
-                }
-            }
-
-            if render.codec.usesBitrate {
-                VStack(alignment: .leading, spacing: 12) {
+                Section {
                     GradeSlider(
-                        title: "Битрейт, Мбит/с",
-                        value: $render.bitrate,
-                        range: 5...150,
-                        neutral: 80,
+                        title: "Сила размытия",
+                        value: $render.motionBlur,
+                        range: 0...100,
+                        neutral: 0,
                         format: "%.0f",
                         step: 5
                     )
-                    ChipRow(
-                        values: [20, 40, 80, 120],
-                        current: render.bitrate,
-                        label: { "\(Int($0))" },
-                        action: { render.bitrate = $0 }
+                } header: {
+                    SectionLabel("Размытие движения")
+                } footer: {
+                    Note("Имитирует выдержку камеры: быстрые объекты слегка смазываются. Для максимальной чёткости держи выключенным. Рендер идёт заметно дольше.")
+                }
+                .surfaceRow()
+                .rise(2)
+            }
+            .themedList()
+            .animation(Theme.soft, value: render.smartPacing)
+            .navigationTitle("Плавность")
+        }
+    }
+}
+
+// MARK: - Качество
+
+struct QualityScreen: View {
+    @ObservedObject var render: RenderViewModel
+    @EnvironmentObject private var ui: AppUI
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ValueRow(title: "Кодек", value: render.codec.title) {
+                        let codecs = VideoCodec.allCases
+                        ui.pick(
+                            "Кодек",
+                            options: codecs.map { SheetOption(title: $0.title) },
+                            selected: codecs.firstIndex(of: render.codec)
+                        ) { render.codec = codecs[$0] }
+                    }
+                    if render.codec.usesBitrate {
+                        ValueRow(title: "Битрейт", value: "\(Int(render.bitrate)) Мбит/с") {
+                            let values = BitratePresets.values(including: render.bitrate)
+                            ui.pick(
+                                "Битрейт",
+                                options: values.map { SheetOption(title: "\(Int($0)) Мбит/с") },
+                                selected: values.firstIndex(of: render.bitrate)
+                            ) { render.bitrate = values[$0] }
+                        }
+                        GradeSlider(
+                            title: "Точное значение, Мбит/с",
+                            value: $render.bitrate,
+                            range: 5...150,
+                            neutral: RenderDefaults.bitrate,
+                            format: "%.0f",
+                            step: 5
+                        )
+                    }
+                } footer: {
+                    Note(qualityNote)
+                }
+                .surfaceRow()
+                .rise(1)
+
+                Section {
+                    GradeSlider(
+                        title: "Резкость",
+                        value: $render.sharpness,
+                        range: 0...100,
+                        neutral: 0,
+                        format: "%.0f",
+                        step: 5
                     )
+                } header: {
+                    SectionLabel("Резкость достроенных кадров")
+                } footer: {
+                    Note("Подтягивает чёткость промежуточных кадров, они обычно мягче оригинальных. Исходные кадры не меняются.")
                 }
-                .themedCard()
+                .surfaceRow()
+                .rise(2)
             }
-
-            Text("≈ \(Int(render.estimatedSizeMB)) МБ · \(render.codec.title)\(render.codec.usesBitrate ? "" : " (ориентировочно, у ProRes нет битрейта)")")
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.textSecondary)
+            .themedList()
+            .animation(Theme.soft, value: render.codec)
+            .navigationTitle("Качество")
         }
     }
 
-    // MARK: Запуск
+    private var qualityNote: String {
+        var text = render.codec.details
+        if render.codec.usesBitrate {
+            text += "\n\nВысокий битрейт сохраняет мелкие детали, но файл получится тяжелее."
+        }
+        if render.info != nil {
+            text += " ≈ \(Int(render.estimatedSizeMB)) МБ"
+            if !render.codec.usesBitrate { text += " (ориентировочно, у ProRes нет битрейта)" }
+            text += "."
+        }
+        return text
+    }
+}
 
-    private var runTab: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if render.info == nil {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Сначала выберите видео.")
-                        .font(.system(size: 15))
-                        .foregroundStyle(Theme.textSecondary)
-                    PrimaryButton(title: "Выбрать видео", icon: "video.badge.plus") { tab = 0 }
+/// Готовые значения битрейта для шита
+enum BitratePresets {
+    static let base: [Double] = [10, 20, 40, 60, 80, 120, 150]
+
+    static func values(including current: Double) -> [Double] {
+        base.contains(current) ? base : (base + [current]).sorted()
+    }
+}
+
+// MARK: - Задачи
+
+struct TasksScreen: View {
+    @ObservedObject var render: RenderViewModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if render.jobs.isEmpty {
+                        VStack(spacing: 4) {
+                            Text("Пока пусто")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(Theme.text)
+                            Text("Запусти рендер, и готовые ролики появятся здесь.")
+                                .font(.system(size: 13.5))
+                                .foregroundStyle(Theme.text2)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 36)
+                        .padding(.horizontal, 8)
+                    } else {
+                        ForEach(render.jobs) { job in
+                            JobRow(
+                                job: job,
+                                expanded: render.expandedJob == job.id,
+                                player: render.expandedJob == job.id ? render.resultPlayer : nil
+                            ) {
+                                withAnimation(Theme.soft) { render.toggleExpand(job) }
+                            }
+                        }
+                    }
                 }
-                .themedCard()
-            } else {
-                summary
-
-                ToggleRow(
-                    title: "Применить цветокоррекцию",
-                    caption: render.colorReady
-                        ? "Цвет, чёткость и текстуры из вкладки «Цвет» применятся в том же проходе, без лишнего пережатия."
-                        : "Сначала настройте цвет на вкладке «Цвет» (например, пресет «HDR-игра»).",
-                    icon: "paintpalette", isOn: $render.applyColor,
-                    disabled: !render.colorReady
-                )
-
-                action
+                .surfaceRow()
+                .rise(1)
             }
+            .themedList()
+            .animation(Theme.soft, value: render.jobs.map(\.id))
+            .navigationTitle("Задачи")
+        }
+    }
+}
 
-            status
+private struct JobRow: View {
+    let job: RenderJob
+    let expanded: Bool
+    let player: AVPlayer?
+    let onTap: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(action: onTap) {
+                HStack(spacing: 12) {
+                    ItemLabel(title: job.name, sub: subtitle)
+                    Spacer(minLength: 8)
+                    status
+                        .frame(width: 22, height: 22)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded, let url = job.url {
+                if let player {
+                    MediaView(player: player, cornerRadius: 16) { EmptyView() }
+                        .frame(height: 220)
+                }
+                if let message = job.message {
+                    Text(message)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.text2)
+                }
+                ShareLink(item: url) {
+                    Label("Поделиться файлом", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 16, weight: .semibold))
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                }
+                .buttonStyle(.glass)
+                .tint(Theme.text)
+                .padding(.bottom, 4)
+            }
         }
     }
 
-    private var summary: some View {
-        VStack(spacing: 0) {
-            if let info = render.info {
-                InfoRow(
-                    label: "Частота кадров",
-                    value: "\(Int(info.fps.rounded())) → \(render.smartPacing ? render.targetFPS : Int((info.fps * 2).rounded())) к/с"
-                )
-            }
-            InfoRow(label: "Умный темп", value: render.smartPacing ? "Вкл" : "Выкл")
-            InfoRow(
-                label: "Нейро-улучшение",
-                value: render.neuralEnabled ? "\(render.neuralModel.title), \(Int(render.neuralStrength))" : "Выкл"
-            )
-            InfoRow(label: "Цвет", value: render.applyColor ? "Вкл" : "Выкл")
-            InfoRow(label: "Размытие движения", value: render.motionBlur == 0 ? "Выкл" : "\(Int(render.motionBlur))")
-            InfoRow(label: "Резкость", value: render.sharpness == 0 ? "Выкл" : "\(Int(render.sharpness))")
-            InfoRow(
-                label: "Кодек",
-                value: render.codec.usesBitrate ? "\(render.codec.title), \(Int(render.bitrate)) Мбит/с" : render.codec.title
-            )
-            InfoRow(label: "Размер файла", value: "≈ \(Int(render.estimatedSizeMB)) МБ", divider: false)
-        }
-        .themedCard()
-    }
-
-    @ViewBuilder
-    private var action: some View {
-        if case .rendering(let value) = render.state {
-            VStack(alignment: .leading, spacing: 10) {
-                GradientProgress(value: value)
-                Text("\(render.stageText) · \(Int(value * 100))% — не блокируй экран и не сворачивай приложение")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Theme.textSecondary)
-                PrimaryButton(title: "Отменить", icon: "xmark", dark: true) { render.cancel() }
-            }
-            .themedCard()
-        } else {
-            PrimaryButton(title: "Рендер", icon: "play.fill") { render.render() }
-        }
+    private var subtitle: String {
+        if case .failed(let message) = job.status { return message }
+        return job.summary
     }
 
     @ViewBuilder
     private var status: some View {
-        switch render.state {
-        case .done(let url, let message):
-            VStack(alignment: .leading, spacing: 12) {
-                if let player = render.resultPlayer {
-                    VideoPlayer(player: player)
-                        .frame(height: 220)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        switch job.status {
+        case .running(let value):
+            ProgressRing(value: value)
+                .animation(.linear(duration: 0.2), value: value)
+        case .done:
+            AppearingTick()
+                .foregroundStyle(Theme.text)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.text2)
+        }
+    }
+}
+
+// MARK: - Настройки
+
+struct SettingsScreen: View {
+    @ObservedObject var render: RenderViewModel
+    @ObservedObject var license: LicenseManager
+    @EnvironmentObject private var ui: AppUI
+    @AppStorage(ThemeChoice.storageKey) private var themeRaw = ThemeChoice.system.rawValue
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    LabeledContent("Статус", value: license.statusText)
+                    if case .active(let payload) = license.state {
+                        LabeledContent("Ключ", value: payload.id)
+                    }
+                    Button {
+                        UIPasteboard.general.string = license.deviceCode
+                        ui.show("Код скопирован")
+                    } label: {
+                        LabeledContent("Код устройства") {
+                            HStack(spacing: 6) {
+                                Text(license.deviceCode).monospaced()
+                                Image(systemName: "doc.on.doc")
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if case .active = license.state {
+                        ActionRow(title: "Сменить ключ", icon: "key") { license.deactivate() }
+                            .disabled(render.isRendering)
+                            .opacity(render.isRendering ? 0.5 : 1)
+                    }
+                } header: {
+                    SectionLabel("Лицензия")
                 }
-                Label(message, systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.green)
-                ShareLink(item: url) {
-                    PrimaryLabel(title: "Поделиться файлом", icon: "square.and.arrow.up", dark: true)
+                .foregroundStyle(Theme.text)
+                .surfaceRow()
+                .rise(1)
+
+                Section {
+                    ForEach(ThemeChoice.allCases) { choice in
+                        TickRow(title: choice.title, selected: themeRaw == choice.rawValue) {
+                            themeRaw = choice.rawValue
+                        }
+                    }
+                } header: {
+                    SectionLabel("Оформление")
                 }
+                .surfaceRow()
+                .rise(2)
+
+                Section {
+                    ActionRow(title: "Сбросить настройки рендера") {
+                        render.resetSettings()
+                        ui.show("Настройки рендера сброшены")
+                    }
+                    .disabled(render.isRendering)
+                    .opacity(render.isRendering ? 0.5 : 1)
+                    LabeledContent("Версия", value: appVersion)
+                        .foregroundStyle(Theme.text)
+                }
+                .surfaceRow()
+                .rise(3)
             }
-            .themedCard()
-        case .failed(let message):
-            if tab != 0 {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.red)
-            }
-        default:
-            EmptyView()
+            .themedList()
+            .navigationTitle("Настройки")
         }
     }
 
-    private func formatDuration(_ seconds: Double) -> String {
-        let s = Int(seconds.rounded())
-        return String(format: "%d:%02d", s / 60, s % 60)
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
     }
 }

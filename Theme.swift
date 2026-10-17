@@ -1,56 +1,78 @@
 import SwiftUI
+import UIKit
 
-/// Тёмно-синяя палитра с зелёным акцентом
+/// Монохромная палитра: светлая и тёмная тема (значения из макета «render liquid glass»)
+/// Дизайн был написан @inflexibleN1
 enum Theme {
-    static let background = Color(red: 0.035, green: 0.051, blue: 0.067)
-    static let panel = Color(red: 0.055, green: 0.078, blue: 0.098)
-    static let card = Color(red: 0.063, green: 0.090, blue: 0.110)
-    static let row = Color(red: 0.086, green: 0.118, blue: 0.141)
-    static let selected = Color(red: 0.110, green: 0.149, blue: 0.180)
-    static let stroke = Color.white.opacity(0.075)
+    static let bg = dynamic(UIColor(white: 0.949, alpha: 1), UIColor(white: 0, alpha: 1))
+    static let surface = dynamic(UIColor(white: 1, alpha: 1), UIColor(white: 0.071, alpha: 1))
+    static let surface2 = dynamic(UIColor(white: 0, alpha: 0.05), UIColor(white: 1, alpha: 0.07))
+    static let line = dynamic(UIColor(white: 0, alpha: 0.08), UIColor(white: 1, alpha: 0.08))
+    static let press = dynamic(UIColor(white: 0, alpha: 0.04), UIColor(white: 1, alpha: 0.05))
 
-    /// Запасной цвет для мелких значков. Основной цвет интерфейса — градиент ниже.
-    static let accent = Color.white
+    static let text = dynamic(UIColor(white: 0, alpha: 1), UIColor(white: 1, alpha: 1))
+    static let text2 = dynamic(UIColor(white: 0, alpha: 0.5), UIColor(white: 1, alpha: 0.5))
+    static let text3 = dynamic(UIColor(white: 0, alpha: 0.28), UIColor(white: 1, alpha: 0.28))
 
-    /// Основной цвет: градиент от чёрного к белому слева направо
-    static let gradient = LinearGradient(
-        colors: [Color(white: 0.04), Color(white: 1.0)],
-        startPoint: .leading,
-        endPoint: .trailing
-    )
+    /// Главный цвет: чёрный в светлой теме, белый в тёмной
+    static let accent = dynamic(UIColor(white: 0, alpha: 1), UIColor(white: 1, alpha: 1))
+    static let onAccent = dynamic(UIColor(white: 1, alpha: 1), UIColor(white: 0, alpha: 1))
+    static let ctaFill = dynamic(UIColor(white: 1, alpha: 0.18), UIColor(white: 0, alpha: 0.08))
+    static let ctaChip = dynamic(UIColor(white: 1, alpha: 0.14), UIColor(white: 0, alpha: 0.07))
 
-    static let textPrimary = Color(red: 0.93, green: 0.95, blue: 0.97)
-    static let textSecondary = Color(red: 0.53, green: 0.58, blue: 0.64)
-    static let textTertiary = Color(red: 0.38, green: 0.43, blue: 0.48)
+    /// Дорожка включённого переключателя. Ручка системного Toggle всегда белая,
+    /// поэтому в тёмной теме дорожка серая, а не белая.
+    static let switchOn = dynamic(UIColor(white: 0, alpha: 1), UIColor(white: 0.56, alpha: 1))
 
-    static let trackOff = Color(red: 0.145, green: 0.180, blue: 0.212)
-    static let knobOff = Color(red: 0.90, green: 0.92, blue: 0.94)
-    static let gradientEdge = Color.white.opacity(0.22)
+    /// Пружина с заметным перелётом (--spring)
+    static let spring = Animation.spring(duration: 0.55, bounce: 0.32)
+    /// Мягкая пружина почти без перелёта (--soft)
+    static let soft = Animation.spring(duration: 0.65, bounce: 0.05)
 
-    /// Фон экрана: почти чёрный сверху, к низу чуть светлее
-    static var backdrop: some View {
-        LinearGradient(
-            stops: [
-                .init(color: Color(red: 0.035, green: 0.051, blue: 0.067), location: 0.0),
-                .init(color: Color(red: 0.050, green: 0.071, blue: 0.090), location: 0.55),
-                .init(color: Color(red: 0.140, green: 0.165, blue: 0.195), location: 1.0)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
+    private static func dynamic(_ light: UIColor, _ dark: UIColor) -> Color {
+        Color(UIColor { $0.userInterfaceStyle == .dark ? dark : light })
+    }
+}
+
+// MARK: - Выбор темы
+
+enum ThemeChoice: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    static let storageKey = "appTheme"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "Как в системе"
+        case .light: return "Светлая"
+        case .dark: return "Тёмная"
+        }
+    }
+
+    var scheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
     }
 }
 
 extension View {
-    /// Тёмная карточка с тонкой рамкой
-    func themedCard(radius: CGFloat = 16) -> some View {
+    /// Список в стиле макета: сгруппированные карточки на фоне `bg`
+    func themedList() -> some View {
         self
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.card, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .stroke(Theme.stroke, lineWidth: 1)
-            )
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Theme.bg)
+    }
+
+    /// Фон строки списка (`surface`)
+    func surfaceRow() -> some View {
+        listRowBackground(Theme.surface)
     }
 }

@@ -7,242 +7,330 @@ import AVKit
 struct ColorScreen: View {
     @ObservedObject var color: ColorViewModel
     @ObservedObject var render: RenderViewModel
-    let goToRender: () -> Void
+    let goToVideo: () -> Void
 
-    @State private var tab = 0
+    @EnvironmentObject private var ui: AppUI
     @State private var referenceItem: PhotosPickerItem?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                SectionHeader(title: "Цвет", subtitle: "Подбор по референсу и ручная настройка")
-
-                if color.sourceURL == nil {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Сначала выберите видео на вкладке «Рендер».")
-                            .font(.system(size: 15))
-                            .foregroundStyle(Theme.textSecondary)
-                        PrimaryButton(title: "Выбрать видео", icon: "video.badge.plus") { goToRender() }
+        List {
+            if color.sourceURL == nil {
+                Section {
+                    VStack(spacing: 4) {
+                        Text("Сначала выберите видео")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Theme.text)
+                        Text("Цвет настраивается для видео, выбранного на вкладке «Видео».")
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(Theme.text2)
+                            .multilineTextAlignment(.center)
                     }
-                    .themedCard()
-                } else {
-                    preview
-                    PillTabs(titles: ["Подбор", "Свет", "Цвет", "Детали", "Экспорт"], selection: $tab)
-                    tabContent
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 28)
+                    ActionRow(title: "К видео", icon: "play.rectangle") { goToVideo() }
                 }
-
-                messages
+                .surfaceRow()
+            } else {
+                content
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 24)
         }
-        .onChange(of: referenceItem) { _, item in Task { await color.loadReference(item) } }
-        .onChange(of: color.params) { _, _ in color.pushPreview() }
-        .onChange(of: color.match) { _, _ in color.pushPreview() }
-        .onChange(of: color.showOriginal) { _, _ in color.pushPreview() }
-    }
-
-    // MARK: Просмотр
-
-    private var preview: some View {
-        VStack(spacing: 10) {
-            if let player = color.player {
-                VideoPlayer(player: player)
-                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .themedList()
+        .animation(Theme.soft, value: color.match != nil)
+        .animation(Theme.soft, value: color.isExporting)
+        .navigationTitle("Цвет")
+        .onChange(of: referenceItem) { _, item in
+            guard let item else { return }
+            Task {
+                await color.loadReference(item)
+                referenceItem = nil
             }
-            ToggleRow(title: "Показать оригинал", icon: "eye", isOn: $color.showOriginal)
         }
     }
 
     @ViewBuilder
-    private var tabContent: some View {
-        switch tab {
-        case 0:
-            matching
-        case 1:
-            light
-        case 2:
-            colors
-        case 3:
-            details
-        default:
-            export
-        }
-    }
-
-    // MARK: Подбор
-
-    private var matching: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let image = color.referenceImage {
-                HStack(spacing: 12) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 84, height: 84)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Референс загружен")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.white)
-                        Button("Убрать") { color.clearReference() }
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.red)
+    private var content: some View {
+        if let player = color.player {
+            Section {
+                MediaView(player: player) {
+                    Button {
+                        color.showOriginal.toggle()
+                    } label: {
+                        MediaCornerLabel(
+                            title: "Оригинал",
+                            icon: color.showOriginal ? "eye.fill" : "eye"
+                        )
+                        .opacity(color.showOriginal ? 1 : 0.85)
                     }
-                    Spacer(minLength: 0)
+                    .buttonStyle(PressStyle())
                 }
-                .themedCard()
+                .frame(height: 260)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
+                .rise(1)
             }
+        }
 
-            PhotosPicker(selection: $referenceItem, matching: .images) {
-                PrimaryLabel(
-                    title: color.referenceImage == nil ? "Загрузить скриншот-референс" : "Заменить референс",
-                    icon: "photo.badge.plus"
-                )
-            }
-            .disabled(color.isExporting)
-
-            if color.match != nil {
-                GradeSlider(title: "Сила совпадения", value: $color.params.matchStrength, range: 0...1, neutral: 1)
-                    .themedCard()
-            }
-
-            Text(color.matchStatus.isEmpty
-                 ? "Выберите скриншот кадра с нужной цветокоррекцией. Лучше брать кадр, похожий по сюжету и без интерфейса приложения. Приложение сравнит яркость и цвета и подберёт кривые."
-                 : color.matchStatus)
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.textSecondary)
-
-            SmallCaption(text: "Пресеты")
-            SelectRow(title: "HDR-игра", subtitle: "Локальный контраст, резкие края, насыщенный цвет", selected: false) {
-                color.applyPreset(.hdrGame)
-            }
-            SelectRow(title: "Чёткая картинка", subtitle: "Чище и чётче, цвет почти не меняется", selected: false) {
-                color.applyPreset(.crisp)
-            }
-            SelectRow(title: "Рисованный", subtitle: "Однотонные текстуры заливаются цветом, края чёткие", selected: false) {
-                color.applyPreset(.painted)
-            }
-            SelectRow(title: "Сбросить настройки", subtitle: "Вернуть все ползунки в нейтральное положение", selected: false) {
-                color.resetAll()
-            }
-
-            ToggleRow(
+        Section {
+            SwitchRow(
                 title: "Применять в рендере",
-                caption: "Включает этот цвет на вкладке «Рендер» (один проход вместе с интерполяцией).",
-                icon: "play.rectangle", isOn: $render.applyColor
+                sub: render.colorReady
+                    ? "Цвет, чёткость и текстуры применятся в том же проходе, что и интерполяция, без лишнего пережатия."
+                    : "Сначала настройте цвет ниже (например, пресет «HDR-игра»).",
+                isOn: $render.applyColor,
+                disabled: !render.colorReady
             )
         }
-    }
+        .surfaceRow()
+        .rise(2)
 
-    // MARK: Ползунки
+        Section {
+            PhotosPicker(selection: $referenceItem, matching: .images) {
+                HStack(spacing: 12) {
+                    referenceThumb
+                    ItemLabel(
+                        title: color.referenceImage == nil ? "Загрузить скриншот-референс" : "Заменить референс",
+                        sub: color.referenceImage == nil ? nil : "Референс загружен"
+                    )
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.text3)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(color.isExporting)
 
-    private var light: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            GradeSlider(title: "Экспозиция", value: $color.params.exposure, range: -2...2, neutral: 0)
-            GradeSlider(title: "Контраст", value: $color.params.contrast, range: 0.5...1.5, neutral: 1)
-            GradeSlider(title: "Света (приглушить)", value: $color.params.highlights, range: 0...100, neutral: 0, format: "%.0f")
-            GradeSlider(title: "Тени", value: $color.params.shadows, range: -100...100, neutral: 0, format: "%.0f")
-            GradeSlider(title: "S-кривая (глубина)", value: $color.params.curve, range: 0...1, neutral: 0)
-            hint
+            if color.referenceImage != nil {
+                ActionRow(title: "Убрать референс", icon: "xmark") { color.clearReference() }
+            }
+            if color.match != nil {
+                GradeSlider(title: "Сила совпадения", value: $color.params.matchStrength, range: 0...1, neutral: 1)
+            }
+        } header: {
+            SectionLabel("Подбор по референсу")
+        } footer: {
+            Note(color.matchStatus.isEmpty
+                 ? "Выберите скриншот кадра с нужной цветокоррекцией. Лучше брать кадр, похожий по сюжету и без интерфейса приложения. Приложение сравнит яркость и цвета и подберёт кривые."
+                 : color.matchStatus)
         }
-        .themedCard()
-        .disabled(color.isExporting)
-    }
+        .surfaceRow()
+        .rise(3)
 
-    private var colors: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            GradeSlider(title: "Теплота", value: $color.params.warmth, range: -100...100, neutral: 0, format: "%.0f")
-            GradeSlider(title: "Оттенок", value: $color.params.tint, range: -100...100, neutral: 0, format: "%.0f")
-            GradeSlider(title: "Насыщенность", value: $color.params.saturation, range: 0...2, neutral: 1)
-            GradeSlider(title: "Живость", value: $color.params.vibrance, range: -1...1, neutral: 0)
-            hint
+        Section {
+            presetRow("HDR-игра", "Локальный контраст, резкие края, насыщенный цвет", .hdrGame)
+            presetRow("Чёткая картинка", "Чище и чётче, цвет почти не меняется", .crisp)
+            presetRow("Рисованный", "Однотонные текстуры заливаются цветом, края чёткие", .painted)
+            Button {
+                color.resetAll()
+                ui.show("Настройки цвета сброшены")
+            } label: {
+                ItemLabel(title: "Сбросить настройки", sub: "Вернуть все ползунки в нейтральное положение")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } header: {
+            SectionLabel("Пресеты")
         }
-        .themedCard()
         .disabled(color.isExporting)
-    }
+        .surfaceRow()
 
-    private var details: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            GradeSlider(title: "Кисть: заливка однотонных участков", value: $color.params.flatten, range: 0...1, neutral: 0)
-            GradeSlider(title: "Сглаживание шума и текстур", value: $color.params.denoise, range: 0...1, neutral: 0)
-            GradeSlider(title: "Чёткость (локальный контраст)", value: $color.params.clarity, range: 0...1, neutral: 0)
-            GradeSlider(title: "Резкость", value: $color.params.sharpness, range: 0...2, neutral: 0)
-            GradeSlider(title: "Виньетка", value: $color.params.vignette, range: 0...1, neutral: 0)
-            hint
+        Section {
+            ForEach(GradeGroup.allCases) { group in
+                NavigationLink(value: VideoRoute.grade(group)) {
+                    HStack {
+                        ItemLabel(title: group.title)
+                        Spacer(minLength: 8)
+                        RollText(text: group.isNeutral(color.params) ? "Нейтрально" : "Изменено")
+                            .font(.system(size: 16))
+                            .foregroundStyle(Theme.text2)
+                    }
+                }
+            }
+        } header: {
+            SectionLabel("Настройка")
         }
-        .themedCard()
-        .disabled(color.isExporting)
+        .surfaceRow()
+
+        exportSection
     }
 
-    private var hint: some View {
-        Text("Нажми на число справа от ползунка, чтобы вернуть его в исходное значение.")
-            .font(.system(size: 12))
-            .foregroundStyle(Theme.textSecondary)
+    private var referenceThumb: some View {
+        Group {
+            if let image = color.referenceImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "photo.badge.plus")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(Theme.text)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Theme.surface2)
+            }
+        }
+        .frame(width: 44, height: 44)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func presetRow(_ title: String, _ sub: String, _ preset: GradeParams) -> some View {
+        Button {
+            color.applyPreset(preset)
+            ui.show("Пресет «\(title)» применён")
+        } label: {
+            ItemLabel(title: title, sub: sub)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: Экспорт
 
-    private var export: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Сохранить только цвет, без интерполяции и нейро-улучшения. Для полного результата используйте вкладку «Рендер».")
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.textSecondary)
-
-            ForEach(VideoCodec.allCases) { codec in
-                SelectRow(title: codec.title, selected: color.codec == codec) {
-                    color.codec = codec
-                }
+    private var exportSection: some View {
+        Section {
+            ValueRow(title: "Кодек", value: color.codec.title) {
+                let codecs = VideoCodec.allCases
+                ui.pick(
+                    "Кодек",
+                    options: codecs.map { SheetOption(title: $0.title) },
+                    selected: codecs.firstIndex(of: color.codec)
+                ) { color.codec = codecs[$0] }
             }
+            .disabled(color.isExporting)
 
             if color.codec.usesBitrate {
+                ValueRow(title: "Битрейт", value: "\(Int(color.bitrate)) Мбит/с") {
+                    let values = BitratePresets.values(including: color.bitrate)
+                    ui.pick(
+                        "Битрейт",
+                        options: values.map { SheetOption(title: "\(Int($0)) Мбит/с") },
+                        selected: values.firstIndex(of: color.bitrate)
+                    ) { color.bitrate = values[$0] }
+                }
+                .disabled(color.isExporting)
                 GradeSlider(
-                    title: "Битрейт, Мбит/с",
+                    title: "Точное значение, Мбит/с",
                     value: $color.bitrate,
                     range: 5...150,
                     neutral: 80,
                     format: "%.0f",
                     step: 5
                 )
-                .themedCard()
+                .disabled(color.isExporting)
             }
 
             if color.isExporting {
-                VStack(alignment: .leading, spacing: 10) {
-                    GradientProgress(value: color.progress)
-                    Text("\(color.stage) · \(Int(color.progress * 100))% — не блокируй экран и не сворачивай приложение")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.textSecondary)
-                    PrimaryButton(title: "Отменить", icon: "xmark", dark: true) { color.cancel() }
+                HStack(spacing: 12) {
+                    ProgressRing(value: color.progress)
+                        .frame(width: 22, height: 22)
+                        .animation(.linear(duration: 0.2), value: color.progress)
+                    ItemLabel(
+                        title: "\(color.stage) · \(Int(color.progress * 100))%",
+                        sub: "Не блокируй экран и не сворачивай приложение"
+                    )
                 }
-                .themedCard()
+                ActionRow(title: "Отменить", icon: "xmark") { color.cancel() }
             } else {
-                PrimaryButton(title: "Применить и сохранить", icon: "checkmark") { color.export() }
+                ActionRow(title: "Применить и сохранить", icon: "checkmark") { color.export() }
             }
+
+            if let message = color.resultMessage, let url = color.resultURL, !color.isExporting {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(message)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.text2)
+                    ShareLink(item: url) {
+                        Label("Поделиться файлом", systemImage: "square.and.arrow.up")
+                            .font(.system(size: 16, weight: .semibold))
+                            .frame(maxWidth: .infinity, minHeight: 36)
+                    }
+                    .buttonStyle(.glass)
+                    .tint(Theme.text)
+                }
+                .padding(.vertical, 4)
+            }
+        } header: {
+            SectionLabel("Экспорт только цвета")
+        } footer: {
+            Note("Сохраняет только цвет, без интерполяции и нейро-улучшения. Для полного результата используйте кнопку «Начать рендер».")
+        }
+        .surfaceRow()
+    }
+}
+
+// MARK: - Группы ползунков
+
+enum GradeGroup: String, CaseIterable, Identifiable, Hashable {
+    case light
+    case tone
+    case details
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .light: return "Свет"
+        case .tone: return "Цвет"
+        case .details: return "Детали"
         }
     }
 
-    // MARK: Сообщения
+    func isNeutral(_ p: GradeParams) -> Bool {
+        let n = GradeParams()
+        switch self {
+        case .light:
+            return p.exposure == n.exposure && p.contrast == n.contrast && p.highlights == n.highlights
+                && p.shadows == n.shadows && p.curve == n.curve
+        case .tone:
+            return p.warmth == n.warmth && p.tint == n.tint && p.saturation == n.saturation && p.vibrance == n.vibrance
+        case .details:
+            return p.flatten == n.flatten && p.denoise == n.denoise && p.clarity == n.clarity
+                && p.sharpness == n.sharpness && p.vignette == n.vignette
+        }
+    }
+}
+
+struct GradeGroupScreen: View {
+    let group: GradeGroup
+    @ObservedObject var color: ColorViewModel
+
+    var body: some View {
+        List {
+            Section {
+                sliders
+            } footer: {
+                Note("Нажми на число справа от ползунка, чтобы вернуть его в исходное значение.")
+            }
+            .surfaceRow()
+            .rise(1)
+        }
+        .themedList()
+        .disabled(color.isExporting)
+        .navigationTitle(group.title)
+    }
 
     @ViewBuilder
-    private var messages: some View {
-        if let message = color.resultMessage, let url = color.resultURL {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(message, systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.green)
-                ShareLink(item: url) {
-                    PrimaryLabel(title: "Поделиться файлом", icon: "square.and.arrow.up", dark: true)
-                }
-            }
-            .themedCard()
-        }
-        if let error = color.errorMessage {
-            Label(error, systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(.red)
+    private var sliders: some View {
+        switch group {
+        case .light:
+            GradeSlider(title: "Экспозиция", value: $color.params.exposure, range: -2...2, neutral: 0)
+            GradeSlider(title: "Контраст", value: $color.params.contrast, range: 0.5...1.5, neutral: 1)
+            GradeSlider(title: "Света (приглушить)", value: $color.params.highlights, range: 0...100, neutral: 0, format: "%.0f")
+            GradeSlider(title: "Тени", value: $color.params.shadows, range: -100...100, neutral: 0, format: "%.0f")
+            GradeSlider(title: "S-кривая (глубина)", value: $color.params.curve, range: 0...1, neutral: 0)
+        case .tone:
+            GradeSlider(title: "Теплота", value: $color.params.warmth, range: -100...100, neutral: 0, format: "%.0f")
+            GradeSlider(title: "Оттенок", value: $color.params.tint, range: -100...100, neutral: 0, format: "%.0f")
+            GradeSlider(title: "Насыщенность", value: $color.params.saturation, range: 0...2, neutral: 1)
+            GradeSlider(title: "Живость", value: $color.params.vibrance, range: -1...1, neutral: 0)
+        case .details:
+            GradeSlider(title: "Кисть: заливка однотонных участков", value: $color.params.flatten, range: 0...1, neutral: 0)
+            GradeSlider(title: "Сглаживание шума и текстур", value: $color.params.denoise, range: 0...1, neutral: 0)
+            GradeSlider(title: "Чёткость (локальный контраст)", value: $color.params.clarity, range: 0...1, neutral: 0)
+            GradeSlider(title: "Резкость", value: $color.params.sharpness, range: 0...2, neutral: 0)
+            GradeSlider(title: "Виньетка", value: $color.params.vignette, range: 0...1, neutral: 0)
         }
     }
 }
